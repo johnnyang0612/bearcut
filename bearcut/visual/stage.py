@@ -68,6 +68,42 @@ def windows(visuals: List[dict], pad: float = 0.25) -> List[Tuple[float, float]]
     return out
 
 
+def _backdrop(w: int, h: int, path: str) -> Optional[str]:
+    """畫舞台背景：近黑底加一層很淡的網格。
+
+    純色底會顯得空。參考片在背景鋪了一層幾乎看不見的網格，眼睛不會注意到它，
+    但少了它整塊黑會塌下去。線要夠淡——看得出來就太重了。
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    bg = (0x06, 0x08, 0x0A)
+    im = Image.new("RGB", (w, h), bg)
+    d = ImageDraw.Draw(im)
+    step = max(40, w // 18)
+    line = (0x12, 0x16, 0x1C)
+    for x in range(0, w, step):
+        d.line([(x, 0), (x, h)], fill=line, width=1)
+    for y in range(0, h, step):
+        d.line([(0, y), (w, y)], fill=line, width=1)
+    im.save(path)
+    return path
+
+
+def _window_mask(ww: int, wh: int, path: str, radius: int = 34) -> Optional[str]:
+    """人像小窗的圓角遮罩。直角小窗看起來像沒做完。"""
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    m = Image.new("L", (ww, wh), 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, ww - 1, wh - 1],
+                                        radius=radius, fill=255)
+    m.convert("RGB").save(path)
+    return path
+
+
 def _enable_expr(spans: List[Tuple[float, float]], invert: bool = False) -> str:
     """把時間區間轉成 ffmpeg 的 enable 運算式。"""
     if not spans:
@@ -102,15 +138,42 @@ def compose(video: str, out_path: str, layers: List[dict],
     crop_h = max(2, min(h, int(round(w * wh / ww))))
     crop_y = max(0, min(h - crop_h, int(round(h * FACE_CENTER - crop_h / 2))))
 
+    import tempfile
+    aux = tempfile.mkdtemp(prefix="bearcut-stage-")
+    bg_png = _backdrop(w, h, os.path.join(aux, "bg.png"))
+    mask_png = _window_mask(ww, wh, os.path.join(aux, "mask.png"))
+
     args: List[str] = ["-i", video]
+    idx = {}
+    n = 1
+    if bg_png:
+        args += ["-loop", "1", "-i", bg_png]
+        idx["bg"] = n
+        n += 1
+    if mask_png:
+        args += ["-loop", "1", "-i", mask_png]
+        idx["mask"] = n
+        n += 1
     for L in layers:
         args += ["-framerate", str(fps), "-i",
                  os.path.join(L["frames_dir"], "f_%04d.png")]
+        L["_in"] = n
+        n += 1
 
-    fc = [
-        f"color=c={BG}:s={w}x{h}:r={fps}[bg]",
-        "[0:v]split=2[full][forwin]",
-        f"[forwin]crop={w}:{crop_h}:0:{crop_y},scale={ww}:{wh}[small]",
+    fc = []
+    if bg_png:
+        fc.append(f"[{idx['bg']}:v]scale={w}:{h}[bg]")
+    else:
+        fc.append(f"color=c={BG}:s={w}x{h}:r={fps}[bg]")
+    fc.append("[0:v]split=2[full][forwin]")
+    fc.append(f"[forwin]crop={w}:{crop_h}:0:{crop_y},scale={ww}:{wh}[smallraw]")
+    if mask_png:
+        # 圓角：把遮罩併成 alpha，直角小窗看起來像沒做完
+        fc.append(f"[{idx['mask']}:v]scale={ww}:{wh},format=gray[mk]")
+        fc.append("[smallraw][mk]alphamerge[small]")
+    else:
+        fc.append("[smallraw]null[small]")
+    fc += [
         # 全螢幕人像：舞台時間以外才畫
         f"[bg][full]overlay=0:0:shortest=1:"
         f"enable='{_enable_expr(spans, invert=True)}'[v0]",
@@ -128,7 +191,7 @@ def compose(video: str, out_path: str, layers: List[dict],
         y = max(24, int(round((subtitle_y(h) - 60 - lh) / 2)))
         # setpts 把整段位移到它該出現的時間——舊版漏了這一步，
         # 導致除了第一個以外的動畫都在畫面上看不到。
-        fc.append(f"[{i}:v]setpts=PTS-STARTPTS+{s:.3f}/TB,"
+        fc.append(f"[{L['_in']}:v]setpts=PTS-STARTPTS+{s:.3f}/TB,"
                   f"tpad=stop_mode=clone:stop_duration={hold:.3f}[fx{i}]")
         nxt = f"v1_{i}"
         fc.append(f"[{prev}][fx{i}]overlay={(w - lw) // 2}:{y}:"
@@ -139,11 +202,15 @@ def compose(video: str, out_path: str, layers: List[dict],
     fc.append(f"[{prev}]format=yuv420p[vout]")
 
     say(30, f"合成 {len(layers)} 個動畫與舞台版型…")
-    r = media.ffmpeg(args + [
-        "-filter_complex", ";".join(fc),
-        "-map", "[vout]", "-map", "0:a?",
-        "-c:a", "copy", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-        out_path])
+    try:
+        r = media.ffmpeg(args + [
+            "-filter_complex", ";".join(fc),
+            "-map", "[vout]", "-map", "0:a?",
+            "-c:a", "copy", "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "18", out_path])
+    finally:
+        import shutil
+        shutil.rmtree(aux, ignore_errors=True)
     if r.returncode != 0:
         tail = (r.stderr or "").strip().splitlines()[-12:]
         raise RuntimeError("舞台合成失敗：\n" + "\n".join(tail))
