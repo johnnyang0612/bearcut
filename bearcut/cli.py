@@ -224,6 +224,45 @@ def cmd_highlights(args) -> int:
     return 0
 
 
+def cmd_upgrade(args) -> int:
+    """更新程式本體（規則包用 bearcut update）。"""
+    from . import selfupdate as _su
+
+    def prog(p, m):
+        if not args.json:
+            print(f"  [{int(p):3d}%] {m}", flush=True)
+
+    if args.rollback:
+        res = _su.rollback(progress_cb=prog)
+        _emit(res, args.json,
+              f"\n  {'已還原到 ' + str(res.get('version')) if res['ok'] else res['error']}\n")
+        return 0 if res["ok"] else 1
+
+    info = _su.check(feed=args.feed)
+    if info.get("error"):
+        _emit(info, args.json, f"\n  {info['error']}\n")
+        return 0
+    if not info["available"]:
+        _emit(info, args.json, f"\n  已是最新版（{info['current']}）\n")
+        return 0
+
+    human = (f"\n  有新版程式：{info['current']} → {info['latest']}\n"
+             + (f"\n{info['notes'][:400]}\n" if info.get("notes") else ""))
+    if args.check_only:
+        _emit(info, args.json, human + "\n  用 bearcut upgrade 安裝。\n")
+        return 0
+
+    print(human)
+    print("  你的模型與設定不會被動到，剪好的影片也不會。\n")
+    res = _su.apply(info["url"], expect_sha=info.get("sha256"), progress_cb=prog)
+    _emit({**info, **res}, args.json,
+          (f"\n  已更新到 {res['version']}（原本 {res.get('previous')}）\n"
+           f"  換掉 {res.get('files')} 個檔案。請關掉 BearCut 再重新開啟。\n"
+           "  不滿意可以用 bearcut upgrade --rollback 還原。\n"
+           if res["ok"] else f"\n  {res['error']}\n"))
+    return 0 if res["ok"] else 1
+
+
 def cmd_login(args) -> int:
     """存 Pro 授權碼。存在使用者設定目錄，不在程式資料夾裡。"""
     from . import auth
@@ -349,6 +388,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="只挑段落產清單給人複核，先不剪")
     hl.set_defaults(func=cmd_highlights)
 
+    ug = sub.add_parser("upgrade", help="更新程式本體（規則包請用 update）")
+    ug.add_argument("--check-only", action="store_true", help="只看有沒有新版")
+    ug.add_argument("--rollback", action="store_true", help="還原上一版程式")
+    ug.add_argument("--feed", help="自訂更新來源")
+    ug.set_defaults(func=cmd_upgrade)
+
     li = sub.add_parser("login", help="貼上 Pro 授權碼（存一次就記住）")
     li.add_argument("token", help="授權碼（信件裡那一串）")
     li.add_argument("--feed", help="自訂更新來源（不給就沿用原本設定）")
@@ -365,7 +410,7 @@ def build_parser() -> argparse.ArgumentParser:
     v = sub.add_parser("version", help="顯示版本")
     v.set_defaults(func=cmd_version)
 
-    for sp in (d, s, c, sf, q, up, lf, hl, li, lo, u, v):
+    for sp in (d, s, c, sf, q, up, ug, lf, hl, li, lo, u, v):
         sp.add_argument("--json", action="store_true", help="輸出 JSON（給程式/AI Agent 解析）")
     return p
 

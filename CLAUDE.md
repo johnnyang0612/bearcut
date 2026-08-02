@@ -40,6 +40,8 @@ bearcut/
   llm/        判斷腦：本機 CLI（claude/codex）+ API（Anthropic/OpenAI/Gemini/相容）
   correct.py  校字（必須在判斷之前）
   longform.py 長片：多段各自順剪再接（不整支丟進 pipeline，理由見檔頭）
+  highlights.py 自動挑精華（編排在此，判準在 Pro 規則包）
+  selfupdate.py 程式本體更新（update.py 更新的是規則包）
   plan.py     合併刀 → 保留區間 → 對照表
   cut.py      ffmpeg 剪接
   subtitle.py V1 + SRT（時間軸對齊剪完之後）
