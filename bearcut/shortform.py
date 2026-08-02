@@ -137,8 +137,9 @@ def make(video: str, srt: Optional[str] = None,
     # fx（HTML 模板）不進 ASS——它是獨立的透明圖層，燒完字幕之後才疊上去
     fx_list = [v for v in visual_list if v.get("type") == "fx"]
     ass_visuals = [v for v in visual_list if v.get("type") != "fx"]
+    # fx 不進 ASS，但它的時間區間要進去——字幕與字卡得知道哪幾秒畫面會換版
     _vert.build_ass(subs, out["ass"], title=title, cta=cta, visuals=ass_visuals,
-                    card_list=card_list, long_form=long_form)
+                    stage_fx=fx_list, card_list=card_list, long_form=long_form)
     _vert.render(src, out["ass"], out["video"], FONTS, logo=logo,
                  progress_cb=progress_cb)
 
@@ -155,41 +156,46 @@ def make(video: str, srt: Optional[str] = None,
     # ── fx 疊圖：一個一個疊上去 ─────────────────────────────
     # 失敗不該讓整支短影音沒有產出——已經燒好字幕字卡的片還在，只是少了動畫。
     if fx_list:
+        from .visual import stage as _stage
         from .visual import webfx as _webfx
         import tempfile as _tf
-        from .rules import RULEPACK_DIR as _RP
         tpls = _webfx.templates()
-        cur = out["video"]
-        done = 0
-        for i, fx in enumerate(fx_list, 1):
-            tpl = tpls.get(fx["template"])
-            if not tpl:
-                continue
-            try:
-                with _tf.TemporaryDirectory(prefix="bearcut-fx-") as td:
+        # 所有動畫先各自算完格子，再一次合成——舊版每疊一個就整支重新編碼，
+        # 四個動畫等於四次有損轉檔。而且舊版沒有做時間位移，實測只有第一個
+        # 動畫真的出現在畫面上，程式卻回報「疊上 4 個」。
+        with _tf.TemporaryDirectory(prefix="bearcut-fx-") as td:
+            layers = []
+            for i, fx in enumerate(fx_list, 1):
+                tpl = tpls.get(fx["template"])
+                if not tpl:
+                    continue
+                try:
+                    fd = os.path.join(td, f"L{i}")
+                    os.makedirs(fd, exist_ok=True)
+                    # 模板用設計尺寸寫，撐滿舞台要放大——用 zoom 而不是事後拉伸，
+                    # 出來仍然是原生解析度
+                    z = _stage.zoom_for(_vert.W, fx["w"])
                     frames = _webfx.render_frames(
                         pathlib.Path(tpl["html"]).read_text(encoding="utf-8"),
-                        td, data=fx["fields"], w=fx["w"], h=fx["h"],
-                        dur=fx["dur"], progress_cb=None)
-                    if not frames:
-                        continue
-                    nxt = cur.replace(".mp4", f"_fx{i}.mp4")
-                    _webfx.overlay(cur, td, nxt, at=fx["start"], y=str(fx["y"]))
-                    if cur != out["video"]:
-                        try:
-                            os.remove(cur)
-                        except OSError:
-                            pass
-                    cur = nxt
-                    done += 1
-            except Exception as e:
-                report(92, f"動畫 {i} 疊圖略過（{e}）")
-        if done and cur != out["video"]:
-            try:
-                os.replace(cur, out["video"])
-            except OSError:
-                out["video"] = cur
-        report(95, f"疊上 {done} 個精緻動畫")
+                        fd, data=fx["fields"], w=fx["w"], h=fx["h"],
+                        dur=fx["dur"], zoom=z, progress_cb=None)
+                    if frames:
+                        layers.append({"frames_dir": fd, "start": fx["start"],
+                                       "end": fx["end"],
+                                       "w": int(round(fx["w"] * z)),
+                                       "h": int(round(fx["h"] * z))})
+                except Exception as e:
+                    report(92, f"動畫 {i} 算圖略過（{e}）")
+            if layers:
+                try:
+                    tmp = out["video"].replace(".mp4", "_stage.mp4")
+                    _stage.compose(out["video"], tmp, layers,
+                                   progress_cb=lambda p, m: report(93, m))
+                    os.replace(tmp, out["video"])
+                    report(95, f"疊上 {len(layers)} 個精緻動畫（舞台版型）")
+                except Exception as e:
+                    # 合成失敗不該讓整支短影音沒有產出——字幕字卡都燒好的片還在
+                    report(95, f"★ 舞台合成失敗，保留無動畫版本：{e}")
 
     out["cards"] = card_list
     out["visuals"] = visual_list

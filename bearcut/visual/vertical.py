@@ -50,12 +50,22 @@ def build_ass(subs: List[dict], ass_path: str,
               cta: Optional[str] = None,
               card_list: Optional[List[dict]] = None,
               visuals: Optional[List[dict]] = None,
+              stage_fx: Optional[List[dict]] = None,
               long_form: bool = False,
               keywords: Optional[List[str]] = None) -> str:
     """產直式 ASS：底部字幕（關鍵詞上色）+ 頂部標題/字卡 + 結尾 CTA。"""
     lines = header(W, H, _sub_styles() + _cards.styles())
     ev: List[str] = []
     cx = W // 2
+
+    # 動畫上台的那幾秒畫面會換版：人像縮到底部小窗，字幕要跟著移到小窗上方，
+    # 否則字會壓在小窗上。時間有交疊就整句移上去——一句話講到一半跳位置更難看。
+    from . import stage as _stage
+    stage_spans = _stage.windows(stage_fx or [])
+    stage_sub_y = _stage.subtitle_y(H)
+
+    def _on_stage(s0, s1):
+        return any(s0 < e and s1 > b for b, e in stage_spans)
 
     # 字幕：每列最多 8 字（8×72px + 關鍵詞放大 118% 仍 < 700px 安全寬）
     for s in subs:
@@ -65,8 +75,10 @@ def build_ass(subs: List[dict], ass_path: str,
         rows = split_rows(text, max_len=TYPE["sub_max_len"])
         body = "\\N".join(_kw.decorate(r, keywords, long_form=long_form)
                           for r in rows[:2])
+        place = (f"\\an5\\pos({cx},{stage_sub_y})"
+                 if _on_stage(s["start"], s["end"]) else "")
         ev.append(f"Dialogue: 0,{ts(s['start'])},{ts(s['end'])},Sub,,0,0,0,,"
-                  f"{{\\fad({TYPE['fade_ms']},{TYPE['fade_ms']})}}{body}")
+                  f"{{{place}\\fad({TYPE['fade_ms']},{TYPE['fade_ms']})}}{body}")
 
     # 開場標題：前 3.5 秒，讓中途滑進來的人知道這支在講什麼。
     #
@@ -85,9 +97,11 @@ def build_ass(subs: List[dict], ass_path: str,
             ev.append(f"Dialogue: 1,{ts(0)},{ts(title_end)},Title,,0,0,0,,"
                       f"{{\\pos({cx},{ANCHORS['title_y']})\\fad(200,200)}}{t}")
 
-    # 大字卡
+    # 大字卡。舞台時間內的要拿掉——那幾秒上半部整塊是動畫的，
+    # 字卡疊上去會壓在卡片上。段號去重擋不掉這種「不同段但時間交疊」的情況。
     if card_list:
-        ev += _cards.events(card_list, W)
+        ev += _cards.events(
+            [c for c in card_list if not _on_stage(c["start"], c["end"])], W)
 
     # 動態示意圖跟字卡掛在同一區（畫面上半部），所以同一句不會兩者都上——
     # motion.pick() 已經把段號去重，這裡只負責把事件疊進去。

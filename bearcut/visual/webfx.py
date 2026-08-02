@@ -104,6 +104,10 @@ _STRIP = """<!doctype html><meta charset="utf-8">
   html,body{{margin:0;padding:0;background:transparent}}
   .bc-strip{{display:block}}
   .bc-cell{{width:{w}px;height:{h}px;overflow:hidden;position:relative}}
+  /* zoom 而不是 transform:scale——zoom 會放大版面單位，所以圓角、陰影、
+     字距全部等比長大，出來還是原生解析度不會糊。模板本身用設計尺寸寫，
+     要多大由呼叫端決定。 */
+  .bc-cell > *{{zoom:{zoom}}}
 </style>
 <div class="bc-strip">{cells}</div>
 <script>
@@ -133,9 +137,13 @@ def _fill(template: str, data: dict) -> str:
 
 def render_frames(template_html: str, out_dir: str, data: Optional[dict] = None,
                   w: int = 1000, h: int = 520, fps: int = 24, dur: float = 1.6,
-                  timeout: int = 120,
+                  timeout: int = 120, zoom: float = 1.0,
                   progress_cb: Optional[Callable] = None) -> List[str]:
-    """把模板渲染成一串透明 PNG。回檔案路徑清單（已排序）。"""
+    """把模板渲染成一串透明 PNG。回檔案路徑清單（已排序）。
+
+    `zoom` 把模板等比放大再渲染（w/h 一起放大）。模板用設計尺寸寫，
+    實際要在畫面上佔多大由呼叫端決定——舞台版型需要它佔滿舞台。
+    """
     def say(p, m):
         if progress_cb:
             progress_cb(p, m)
@@ -148,9 +156,11 @@ def render_frames(template_html: str, out_dir: str, data: Optional[dict] = None,
             "裝一個 Chrome 就好，我們不會另外下載瀏覽器。")
 
     n = max(1, int(round(fps * dur)))
+    zoom = max(0.25, float(zoom or 1.0))
+    w, h = int(round(w * zoom)), int(round(h * zoom))
     body = _fill(template_html, data or {})
     cells = "".join(f'<div class="bc-cell">{body}</div>' for _ in range(n))
-    page = _STRIP.format(w=w, h=h, fps=fps, n=n, cells=cells)
+    page = _STRIP.format(w=w, h=h, fps=fps, n=n, cells=cells, zoom=zoom)
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
