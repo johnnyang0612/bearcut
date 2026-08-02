@@ -55,12 +55,26 @@ SKIP_INTERNAL = {"docs/交接.md", "docs/PLAN.md"}
 CRLF_EXT = {".bat", ".cmd"}
 LF_EXT = {".command", ".sh"}
 
+# assets/messages/*.txt 是 START_HERE.bat 用 type 吐出來的中文訊息。
+# 它們在 Windows 主控台顯示，所以要 CRLF——但副檔名是 .txt，不能靠副檔名分辨
+# （repo 裡其他 .txt 例如字型授權不該被動）。git 會把它們存成 LF，
+# 所以跟 .bat 一樣：ZIP 必須自己保證，不能靠 .gitattributes 或工作目錄的狀態。
+CRLF_DIRS = ("assets/messages/",)
 
-def normalize(data: bytes, suffix: str) -> bytes:
-    if suffix not in CRLF_EXT and suffix not in LF_EXT:
+
+def needs_crlf(rel_posix: str, suffix: str) -> bool:
+    return suffix in CRLF_EXT or rel_posix.startswith(CRLF_DIRS)
+
+
+def normalize(data: bytes, suffix: str, rel_posix: str = "") -> bytes:
+    want_crlf = needs_crlf(rel_posix, suffix)
+    if not want_crlf and suffix not in LF_EXT:
         return data
-    lf = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-    return lf.replace(b"\n", b"\r\n") if suffix in CRLF_EXT else lf
+    # 用 bytes([13]) 而不是跳脫序列：這段常被各種工具轉手，
+    # 字面上的反斜線很容易在傳遞途中被吃掉，換算成碼點就不會。
+    CR, LF, CRLF = bytes([13]), bytes([10]), bytes([13, 10])
+    lf = data.replace(CRLF, LF).replace(CR, LF)
+    return lf.replace(LF, CRLF) if want_crlf else lf
 
 
 # 固定時間戳，讓打包**可重現**：同樣的檔案內容永遠產出同一個 SHA-256。
@@ -154,7 +168,8 @@ def main() -> int:
         for src, rel in collect(ROOT):
             data = src.read_bytes()
             total += len(data)
-            data = normalize(data, src.suffix.lower())
+            data = normalize(data, src.suffix.lower(),
+                             str(rel).replace("\\", "/"))
             # 解壓後是一個 BearCut/ 資料夾，不會把檔案灑滿使用者的下載目錄
             z.writestr(entry(str(Path("BearCut") / rel).replace("\\", "/")), data)
             n += 1
