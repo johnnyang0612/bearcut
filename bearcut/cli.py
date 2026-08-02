@@ -191,6 +191,39 @@ def cmd_longform(args) -> int:
     return 0
 
 
+def cmd_highlights(args) -> int:
+    """從長片自動挑出精華段落，各自做成直式短影音。"""
+    from . import highlights as _hl
+    from .rules import RulepackError
+
+    def prog(p, m):
+        if not args.json:
+            print(f"  [{int(p):3d}%] {m}", flush=True)
+
+    try:
+        res = _hl.make(args.video, srt=args.srt, count=args.count,
+                       output_dir=args.out, plan_only=args.plan_only,
+                       progress_cb=prog)
+    except (RulepackError, RuntimeError, FileNotFoundError) as e:
+        _emit({"ok": False, "error": str(e)}, args.json, f"\n  {e}\n")
+        return 1
+
+    if not res["clips"]:
+        _emit({"ok": True, **res}, args.json,
+              "\n  沒有選出夠好的段落。這支片可能偏鋪陳，或字幕太短。\n")
+        return 0
+
+    lines = [f"\n  候選 {len(res['clips'])} 條，清單：{res['plan']}"]
+    for i, c in enumerate(res["outputs"], 1):
+        lines.append(f"\n  {i}. {c['title'] or c['text'][:24]}"
+                     f"（{c['body_dur']:.0f}s・{c['type'] or '未分類'}・{c['score']:.0f} 分）"
+                     f"\n     {c.get('video', '')}")
+    if args.plan_only:
+        lines.append("\n  只產清單，沒有剪。確認後拿掉 --plan-only 再跑一次。")
+    _emit({"ok": True, **res}, args.json, "\n".join(lines) + "\n")
+    return 0
+
+
 def cmd_login(args) -> int:
     """存 Pro 授權碼。存在使用者設定目錄，不在程式資料夾裡。"""
     from . import auth
@@ -307,6 +340,15 @@ def build_parser() -> argparse.ArgumentParser:
     lf.add_argument("--force", action="store_true", help="已剪過的段落也重剪")
     lf.set_defaults(func=cmd_longform)
 
+    hl = sub.add_parser("highlights", help="從長片自動挑精華，做成直式短影音（需 Pro 規則包）")
+    hl.add_argument("video", help="長片路徑（通常是 _完整淨毛片.mp4）")
+    hl.add_argument("--srt", help="字幕檔（預設找同名的）")
+    hl.add_argument("--count", type=int, default=3, help="要剪幾支（預設 3）")
+    hl.add_argument("--out", metavar="資料夾", help="輸出位置")
+    hl.add_argument("--plan-only", action="store_true",
+                    help="只挑段落產清單給人複核，先不剪")
+    hl.set_defaults(func=cmd_highlights)
+
     li = sub.add_parser("login", help="貼上 Pro 授權碼（存一次就記住）")
     li.add_argument("token", help="授權碼（信件裡那一串）")
     li.add_argument("--feed", help="自訂更新來源（不給就沿用原本設定）")
@@ -323,7 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
     v = sub.add_parser("version", help="顯示版本")
     v.set_defaults(func=cmd_version)
 
-    for sp in (d, s, c, sf, q, up, lf, li, lo, u, v):
+    for sp in (d, s, c, sf, q, up, lf, hl, li, lo, u, v):
         sp.add_argument("--json", action="store_true", help="輸出 JSON（給程式/AI Agent 解析）")
     return p
 
