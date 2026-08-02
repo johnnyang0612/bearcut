@@ -44,6 +44,10 @@ from .style import ANCHORS, TYPE, fit_size, ts
 STEPS = 12
 # 一段動畫跑多久（秒）
 GROW_SEC = 0.55
+# 示意圖的標題畫在錨點上方 150px（字級最大 64，連描邊約占到 -114）。
+# 任何圖形元素都不可以越過 -88 這條線，否則會壓在自己的標題上。
+# 新增圖表型別時請照這條線算基準位置——_bars 就是沒算才把標題整個蓋掉。
+CHART_TOP_PAD = 88
 # 一個視覺停留多久（秒）
 HOLD_SEC = 2.6
 
@@ -89,6 +93,15 @@ def _numbers_in(text: str) -> List[float]:
         v = _cn_to_int(m)
         if v:
             out.append(float(v))
+        # 概數：「六七百萬」是六百萬到七百萬，他兩個數字都講了，兩個都算數。
+        # 不展開的話「欠了六七百萬」只解得出七百萬，寫六百萬就被判定成捏造。
+        r = re.match(r"^([零〇一二兩三四五六七八九])([零〇一二兩三四五六七八九])"
+                     r"([十百千萬億].*)$", m)
+        if r:
+            for d in (r.group(1), r.group(2)):
+                v2 = _cn_to_int(d + r.group(3))
+                if v2:
+                    out.append(float(v2))
     # 「七成」= 70%
     for m in re.findall(r"([零〇一二兩三四五六七八九十]+)成", text):
         v = _cn_to_int(m)
@@ -97,15 +110,30 @@ def _numbers_in(text: str) -> List[float]:
     return out
 
 
-def _traceable(value: float, text: str) -> bool:
+def _unit_scale(unit: str) -> float:
+    """單位裡的量級倍數：「萬元」→ 10000、「千萬」→ 10000000、「人」→ 1。"""
+    scale = 1.0
+    for c in unit or "":
+        if c in _CN_UNIT and _CN_UNIT[c] >= 10:
+            scale *= _CN_UNIT[c]
+    return scale
+
+
+def _traceable(value: float, text: str, unit: str = "") -> bool:
     """這個數字追得回這段原文嗎。
 
     容許 5% 誤差——「快五千」寫成 4800 之類的四捨五入是合理的，
     但不能讓模型憑空生一個好看的數字。
+
+    `unit` 帶量級時（「萬元」）也試縮放後的值：畫面上寫「1000 萬元」比
+    「10000000 元」好看得多，模型自然會那樣填，不能因此判它捏造。
     """
+    scale = _unit_scale(unit)
+    cands = {value} | ({value * scale} if scale != 1 else set())
     for n in _numbers_in(text):
-        if n == value or (n and abs(n - value) / max(abs(n), 1) <= 0.05):
-            return True
+        for value_ in cands:
+            if n == value_ or (n and abs(n - value_) / max(abs(n), 1) <= 0.05):
+                return True
         # 5000 對「五千」、70 對「七成」都在 _numbers_in 處理過了
     return False
 
@@ -197,9 +225,17 @@ def _verify(v: dict, segments: List[dict]) -> Optional[dict]:
 
     seg = segments[i]
     text = seg.get("text", "")
+    # 一句話常被 SRT 切成兩行——「以前要五個十個人團隊做的事情」／「現在就是
+    # 我一個人來做」是同一個對比，數字卻分屬兩段。只查本段會把好圖整條丟掉。
+    # 放寬到相鄰各一段：仍然是「他真的講過的數字」，鐵則沒破，只是不再要求
+    # 落在同一行字幕。窗開到 ±1 就好，再大就會抓到不相干的數字。
+    lo, hi = max(0, i - 1), min(len(segments), i + 2)
+    window = "　".join(segments[j].get("text", "") for j in range(lo, hi))
 
     # 帶數字的類型：每個數字都要追得回原文
     values: List[Tuple[str, float]] = []
+    reach = i                       # 數字最遠追到第幾段，決定圖要掛多久
+    unit = str(v.get("unit", "")).strip()[:4]
     if kind in ("counter", "bar", "progress", "ring", "trend", "compare"):
         raw = v.get("items") or []
         if kind in ("counter", "progress", "ring") and v.get("value") is not None:
@@ -211,10 +247,16 @@ def _verify(v: dict, segments: List[dict]) -> Optional[dict]:
                 val = float(it.get("value"))
             except (TypeError, ValueError):
                 continue
-            if not _traceable(val, text):
+            if not _traceable(val, window, unit):
                 return None          # 一個對不上就整條丟掉，不留半真半假的圖
+            for j in range(lo, hi):  # 記下它出自哪一段
+                if _traceable(val, segments[j].get("text", ""), unit):
+                    reach = max(reach, j)
             values.append((str(it.get("label", "")).strip()[:8], val))
         if not values:
+            return None
+        # 兩個以上的數字要並排比較，沒有標籤就只是兩根無意義的柱子
+        if len(values) >= 2 and not all(lb for lb, _ in values):
             return None
 
     labels = [str(x).strip()[:10] for x in (v.get("steps") or []) if str(x).strip()]
@@ -222,28 +264,29 @@ def _verify(v: dict, segments: List[dict]) -> Optional[dict]:
         return None
 
     start = float(seg["start"])
-    end = min(float(seg["end"]), start + HOLD_SEC + GROW_SEC)
+    # 對比的後半句還沒講完就把圖收掉會很怪，掛到數字追得到的最後一段
+    end = min(float(segments[reach]["end"]), start + HOLD_SEC + GROW_SEC)
     if end - start < 0.6:
         end = start + 0.6
 
     return {"seg": i, "type": kind, "start": round(start, 3), "end": round(end, 3),
             "title": str(v.get("title", "")).strip()[:14],
-            "unit": str(v.get("unit", "")).strip()[:4],
+            "unit": unit,
             "values": values, "steps": labels,
             "source": text[:40]}
 
 
 def has_judgment() -> bool:
-    """規則包裡有沒有這個功能的判準。用來決定要不要跟使用者提一句。"""
+    """規則包裡有沒有這個功能的判準。用來決定要不要跟使用者提一句。
+
+    只看檔案在不在，**不要試著渲染**。渲染會把「prompt 多了一個變數而
+    呼叫端沒帶」誤判成「沒有 Pro」——付了錢的訂閱者會被叫去買 Pro。
+    """
     from .. import rules as _rules
-    from ..rules import RulepackError
     try:
-        _rules.load().prompt("visuals", count=0, numbered="", max_n=0, types="")
-        return True
-    except RulepackError:
-        return False
+        return _rules.load().has_prompt("visuals")
     except Exception:
-        return True          # 其他錯誤不該被誤判成「沒有 Pro」
+        return True          # 判斷不了就別擋，讓 pick() 自己去試
 
 
 def pick(segments: List[dict], llm: Provider,
@@ -258,20 +301,23 @@ def pick(segments: List[dict], llm: Provider,
     if not segments:
         return []
     numbered = "\n".join(f"{i+1}. {s.get('text','')}" for i, s in enumerate(segments))
+    # 模板目錄要先備好，因為它會被寫進 prompt——順序反了就 UnboundLocalError，
+    # 而外層的 try/except 會把它吞成「略過」，看起來像沒有 Pro 而不是壞掉。
+    from . import webfx as _webfx
+    tpls = _webfx.templates() if _webfx.available() else {}
     # 判準住在 Pro 規則包。免費包沒有這份 prompt——這個功能整個屬於 Pro。
     # 回空清單而不是丟例外：短影音的其他部分（字幕、字卡、封面）照做，
     # 只是少了圖。呼叫端負責告訴使用者為什麼少。
-    from ..rules import RulepackError
-    try:
-        prompt = _rules.load().prompt(
-            "visuals", count=len(segments), numbered=numbered, max_n=max_n,
-            types="、".join(SUPPORTED),
-            # 沒有瀏覽器時目錄是空的，判斷腦就不會挑 fx——自動降級成 ASS 圖表
-            fx_catalog=_webfx.catalog() if tpls else "（這台機器上不能用）")
-    except RulepackError:
+    pack = _rules.load()
+    if not pack.has_prompt("visuals"):
         return []
-    from . import webfx as _webfx
-    tpls = _webfx.templates() if _webfx.available() else {}
+    # 判準在卻渲染失敗＝程式問題，讓它炸上去給呼叫端報成「程式問題」，
+    # 不要吞成空清單，否則付了錢的人會以為功能只是沒挑到東西。
+    prompt = pack.prompt(
+        "visuals", count=len(segments), numbered=numbered, max_n=max_n,
+        types="、".join(SUPPORTED),
+        # 沒有瀏覽器時目錄是空的，判斷腦就不會挑 fx——自動降級成 ASS 圖表
+        fx_catalog=_webfx.catalog() if tpls else "（這台機器上不能用）")
 
     say(52, "判斷腦挑要配圖的句子…")
     try:
@@ -374,10 +420,13 @@ def _bars(v, cx, y, s, e, gs) -> List[str]:
     vals = v["values"][:5]
     top = max(x[1] for x in vals) or 1
     n = len(vals)
-    bw, gap, hmax = 118, 46, 300
+    bw, gap, hmax = 118, 46, 250
     total = n * bw + (n - 1) * gap
     x0 = cx - total // 2
-    base = y + hmax // 2
+    # 基準線要往下推到最高的柱子＋數字都低於 CHART_TOP，否則會壓在標題上。
+    # 舊值 y+hmax//2 讓柱頂正好落在 y-150 ＝ 標題的位置，實測「團隊規模對比」
+    # 被柱子整個蓋掉。最高的元素是柱頂上方 34px 的數字（fs50，半高＋描邊約 29）。
+    base = y + hmax - CHART_TOP_PAD + 34 + 29
     out = []
     for i, (label, val) in enumerate(vals):
         bx = x0 + i * (bw + gap)
@@ -405,7 +454,8 @@ def _progress(v, cx, y, s, e, gs) -> List[str]:
     label, val = v["values"][0]
     pct = max(0.0, min(100.0, val))
     W, H = 700, 46
-    x0, base = cx - W // 2, y
+    # 百分比數字畫在條的上方 60px（fs104，半高＋描邊約 56），照 CHART_TOP_PAD 反推
+    x0, base = cx - W // 2, y - CHART_TOP_PAD + 56 + 60
     out = [f"Dialogue: 2,{ts(s)},{ts(e)},CardKey,,0,0,0,,"
            f"{{\\pos(0,0)\\p1\\an7\\bord0\\shad0\\alpha&H99&}}"
            f"{_rect(x0, base, W, H)}{{\\p0}}"]
@@ -433,10 +483,10 @@ def _trend(v, cx, y, s, e, gs) -> List[str]:
         return []
     lo, hi = min(vals), max(vals)
     span = (hi - lo) or 1
-    # 圖整體往下讓開標題：折線的最高點會落在 base-H，如果那個位置跟標題重疊
-    # （標題在 y-150），線就會壓在字上。實測過，所以基準線再往下推。
+    # 圖整體往下讓開標題：折線的最高點落在 base-H，末端數字又在那再上方 56px
+    # （fs54，半高＋描邊約 31）。照 CHART_TOP_PAD 反推基準線，不要憑感覺加偏移。
     W, H = 760, 230
-    x0, base = cx - W // 2, y + H // 2 + 70
+    x0, base = cx - W // 2, y - CHART_TOP_PAD + 31 + 56 + H
     step = W // (len(vals) - 1)
     pts = [(x0 + i * step, base - int(H * (val - lo) / span))
            for i, val in enumerate(vals)]

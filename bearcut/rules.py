@@ -107,6 +107,15 @@ class Rules:
 
     # --- prompt ---
 
+    def has_prompt(self, name: str) -> bool:
+        """這份判準在不在規則包裡。
+
+        探測 Pro 功能一律用這個，**不要用「渲染一次看會不會炸」**——
+        渲染失敗有兩種原因（檔案不存在／變數沒帶），混在一起會讓
+        「prompt 多了一個變數」被誤報成「你沒有 Pro」，付了錢的人被叫去買。
+        """
+        return (RULEPACK_DIR / "prompts" / f"{name}.md").exists()
+
     def prompt(self, name: str, **vars_) -> str:
         """讀 `rulepack/prompts/<name>.md` 並代入變數。
 

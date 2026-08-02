@@ -92,17 +92,25 @@ def make(video: str, srt: Optional[str] = None,
             # 動態示意圖：依語意配圖表。判準在規則包，數字必須追得回逐字稿。
             # 失敗不該讓整支短影音做不出來——沒有圖就只是少了圖。
             if use_visuals:
-                try:
-                    from .visual import motion as _motion
-                    if not _motion.has_judgment():
-                        # 講一句就好，不要每次都推銷——但也不要讓他以為功能壞了
-                        report(56, "動態示意圖是 Pro 功能，這支略過（其餘照做）")
-                    visual_list = _motion.pick(segs, llm, progress_cb=progress_cb)
-                    # 同一句不要既上字卡又上圖，會打架
-                    taken = {v['seg'] for v in visual_list}
-                    card_list = [c for i, c in enumerate(card_list) if i not in taken]
-                except Exception as e:
-                    report(56, f'動態示意圖略過（{e}）')
+                from .visual import motion as _motion
+                if not _motion.has_judgment():
+                    # 講一句就好，不要每次都推銷——但也不要讓他以為功能壞了
+                    report(56, "動態示意圖是 Pro 功能，這支略過（其餘照做）")
+                else:
+                    try:
+                        visual_list = _motion.pick(segs, llm, progress_cb=progress_cb)
+                        # 同一句不要既上字卡又上圖，會打架
+                        taken = {v['seg'] for v in visual_list}
+                        card_list = [c for i, c in enumerate(card_list)
+                                     if i not in taken]
+                    except Exception as e:
+                        # 有 Pro 判準卻做不出來＝真的壞了，不是「沒買」。
+                        # 講清楚是程式錯誤，否則使用者會以為是授權問題而去查訂閱。
+                        import traceback
+                        report(56, f'★ 動態示意圖出錯（程式問題，非授權問題）：'
+                                   f'{type(e).__name__}: {e}')
+                        for ln in traceback.format_exc().strip().splitlines()[-3:]:
+                            report(56, f'    {ln.strip()}')
 
     # 追講者（選用）：偵測不到或多人就自動退回不裁切
     src = video

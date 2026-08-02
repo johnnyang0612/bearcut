@@ -72,10 +72,13 @@ def build_ass(subs: List[dict], ass_path: str,
     #
     # ⚠️ 字卡出現時標題要讓位。兩者都在頂帶、只差 80px，同時出現會被讀成同一段話
     # （實測「一人公司怎麼做到的」＋「一人公司十個月」黏成一句，很混亂）。
+    #
+    # 動態示意圖同樣在頂帶，而且畫得比字卡更高更大——實測開頭的計數器
+    # 「1,000萬」直接壓在標題字上。所以兩種都要讓位，不是只讓字卡。
     if title:
         t = clean_text(title)[:16]
         title_end = 3.5
-        for c in (card_list or []):
+        for c in list(card_list or []) + list(visuals or []):
             if c["start"] < title_end:
                 title_end = min(title_end, c["start"] - 0.1)
         if title_end > 0.5:

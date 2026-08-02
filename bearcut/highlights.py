@@ -137,18 +137,18 @@ def select(segments: List[dict], max_n: int = 6,
         return []
 
     numbered = "\n".join(f"{i+1}. {s['text']}" for i, s in enumerate(segments))
-    try:
-        prompt = _rules.load().prompt(
-            "highlights", count=len(segments), numbered=numbered,
-            n_cand=max(max_n * 2, 12),
-            min_sec=f"{min_sec:.0f}", max_sec=f"{max_sec:.0f}")
-    except RulepackError as e:
+    pack = _rules.load()
+    if not pack.has_prompt("highlights"):
         # 免費包沒有這份判準。講清楚這不是壞掉，也不要假裝在跑。
         raise RulepackError(
             "自動挑精華需要 Pro 規則包。\n"
             "免費版的順剪、字幕、直式短影音、長片接合都不受影響，照常可用。\n"
-            "已經訂閱的話：bearcut login <你的授權碼> 之後再跑一次 bearcut update。\n"
-            f"（技術細節：{e}）") from e
+            "已經訂閱的話：bearcut login <你的授權碼> 之後再跑一次 bearcut update。")
+    # 判準在，卻還是渲染失敗＝程式問題，不要誤導成授權問題，直接讓它炸上去
+    prompt = pack.prompt(
+        "highlights", count=len(segments), numbered=numbered,
+        n_cand=max(max_n * 2, 12),
+        min_sec=f"{min_sec:.0f}", max_sec=f"{max_sec:.0f}")
 
     llm = get_llm()
     say(20, f"判斷腦讀完整份字幕（{len(segments)} 段），挑精華中…")
