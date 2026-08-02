@@ -27,17 +27,25 @@ BearCut 的**程式碼**採用 Apache License 2.0 —— 可自由使用、修�
 
 ## ✅ 你可以
 
-- **使用**這些規則剪你自己的片，個人或商業用途都可以，不限數量、不限時數
+- **使用**這些規則剪片，**個人或商業用途都可以** —— 接案、剪客戶的片、賣成片、
+  拿去做自己的頻道或課程示範，都算。不限數量、不限時數、不用告訴我們
 - **閱讀、研究**內容，理解它為什麼這樣判斷
 - **修改**成適合你素材的版本，自己用或在你的團隊內部用
 - 在文章、教學、評論中**引用**片段來說明運作方式
 - 隨**未修改**的 BearCut 一起再散布，保留本檔案
 
+界線很單純：**拿規則去做你的作品，可以；把規則本身變成你的商品，不行。**
+
 ## ❌ 你不可以
 
 - 把規則包**單獨抽出來**重新散布、上架或販售
-- 將其內容（含修改後的版本）**包裝成競品**的規則庫、預設集或訂閱服務
+- 把規則內容（含修改後的版本）**包裝成軟體、外掛、網站或 SaaS 服務**對外販售或提供
+- 包裝成**競品**的規則庫、預設集或訂閱服務
 - 移除或變更本授權聲明與著作權標示
+
+> 註：BearCut **引擎**（`rulepack/` 以外的程式碼）採 Apache-2.0，
+> 上面這些限制**不適用於引擎**。引擎你可以自由使用、修改、再散布，包含商業用途 ——
+> 唯一的限制是名稱與標誌，見 [TRADEMARK.md](../TRADEMARK.md)。
 
 ## 進階規則包
 
@@ -86,19 +94,30 @@ Copyright **Brightstream Technology Co., Ltd. (川輝科技有限公司)**.
 
 ## ✅ You may
 
-- **Use** these rules to edit your own videos, personally or commercially, with
-  no limit on volume or hours
+- **Use** these rules to edit videos, **personally or commercially** — client
+  work, selling the finished videos, your own channel, course demos, all fine.
+  No limit on volume or hours, and no need to tell us
 - **Read and study** the contents to understand the reasoning
 - **Modify** them to suit your footage, for your own or your team's internal use
 - **Quote** excerpts in articles, tutorials, and reviews to explain how it works
 - Redistribute them alongside an **unmodified** copy of BearCut, keeping this file
 
+The line is simple: **using the rules to make your work is fine; turning the
+rules themselves into your product is not.**
+
 ## ❌ You may not
 
 - **Extract** the rulepack and redistribute, publish, or sell it on its own
-- Repackage its contents (including modified versions) as a **competing** rule
-  library, preset collection, or subscription service
+- Repackage its contents (including modified versions) as **software, a plugin,
+  a website, or a SaaS offering** sold or provided to others
+- Repackage them as a **competing** rule library, preset collection, or
+  subscription service
 - Remove or alter this license notice or the copyright attribution
+
+> Note: the BearCut **engine** (all code outside `rulepack/`) is licensed under
+> Apache-2.0. **These restrictions do not apply to the engine** — you may use,
+> modify, and redistribute it freely, including commercially. The only limit
+> there is the name and logo; see [TRADEMARK.md](../TRADEMARK.md).
 
 ## Pro rulepacks
 
