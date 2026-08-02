@@ -93,6 +93,9 @@ def make(video: str, srt: Optional[str] = None,
             if use_visuals:
                 try:
                     from .visual import motion as _motion
+                    if not _motion.has_judgment():
+                        # 講一句就好，不要每次都推銷——但也不要讓他以為功能壞了
+                        report(56, "動態示意圖是 Pro 功能，這支略過（其餘照做）")
                     visual_list = _motion.pick(segs, llm, progress_cb=progress_cb)
                     # 同一句不要既上字卡又上圖，會打架
                     taken = {v['seg'] for v in visual_list}

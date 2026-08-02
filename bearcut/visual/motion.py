@@ -157,6 +157,19 @@ def _verify(v: dict, segments: List[dict]) -> Optional[dict]:
             "source": text[:40]}
 
 
+def has_judgment() -> bool:
+    """規則包裡有沒有這個功能的判準。用來決定要不要跟使用者提一句。"""
+    from .. import rules as _rules
+    from ..rules import RulepackError
+    try:
+        _rules.load().prompt("visuals", count=0, numbered="", max_n=0, types="")
+        return True
+    except RulepackError:
+        return False
+    except Exception:
+        return True          # 其他錯誤不該被誤判成「沒有 Pro」
+
+
 def pick(segments: List[dict], llm: Provider,
          max_n: int = 5, progress_cb=None) -> List[dict]:
     """讀逐字稿，決定哪幾句要配什麼圖。判準來自規則包。"""
@@ -169,9 +182,16 @@ def pick(segments: List[dict], llm: Provider,
     if not segments:
         return []
     numbered = "\n".join(f"{i+1}. {s.get('text','')}" for i, s in enumerate(segments))
-    prompt = _rules.load().prompt("visuals", count=len(segments),
-                                  numbered=numbered, max_n=max_n,
-                                  types="、".join(SUPPORTED))
+    # 判準住在 Pro 規則包。免費包沒有這份 prompt——這個功能整個屬於 Pro。
+    # 回空清單而不是丟例外：短影音的其他部分（字幕、字卡、封面）照做，
+    # 只是少了圖。呼叫端負責告訴使用者為什麼少。
+    from ..rules import RulepackError
+    try:
+        prompt = _rules.load().prompt("visuals", count=len(segments),
+                                      numbered=numbered, max_n=max_n,
+                                      types="、".join(SUPPORTED))
+    except RulepackError:
+        return []
     say(52, "判斷腦挑要配圖的句子…")
     try:
         data = llm.complete_json(prompt, tier=FAST)
