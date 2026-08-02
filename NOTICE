@@ -1,0 +1,50 @@
+BearCut
+Copyright 2026 川輝科技有限公司 (Brightstream Technology Co., Ltd.)
+
+This product includes software developed by
+川輝科技有限公司 (Brightstream Technology Co., Ltd.) — https://Brightstream.com.tw
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+--------------------------------------------------------------------------------
+THIRD-PARTY COMPONENTS
+--------------------------------------------------------------------------------
+
+BearCut does not bundle the components below. They are fetched onto the
+end user's machine at install time, at the user's request, and are executed as
+separate programs or imported as independent libraries. Their licenses apply to
+them, not to BearCut.
+
+FFmpeg — https://ffmpeg.org
+    Downloaded at setup time from third-party static-build providers.
+    Licensed under LGPL-2.1+ / GPL-2.0+ depending on the build.
+    Invoked by BearCut as a separate executable via subprocess.
+
+Source Han Sans TC (思源黑體) — https://github.com/adobe-fonts/source-han-sans
+    Copyright 2014-2021 Adobe (http://www.adobe.com/).
+    Licensed under the SIL Open Font License, Version 1.1.
+    Bundled with this project and redistributable under the OFL.
+
+Speech recognition and machine-learning models (Whisper, Paraformer, and others)
+    Downloaded at first use from their respective hosts.
+    Each is governed by its own license and model card.
+
+--------------------------------------------------------------------------------
+TRADEMARKS
+--------------------------------------------------------------------------------
+
+The names and logos of "熊董", "熊董不上班", "Bear CEO", "川輝科技" and
+"Brightstream Technology", and the BearCut wordmark and logo, are trademarks of
+川輝科技有限公司 and are NOT licensed under the Apache License, Version 2.0.
+
+See TRADEMARK.md for what you may and may not do with them.

@@ -1,0 +1,32 @@
+# 跨平台換行處理。
+# 這不是潔癖問題：.command / .sh 若被簽出成 CRLF，macOS 會直接
+# 報 "bad interpreter: /bin/bash^M" 而無法執行，Mac 支援在第一步就死。
+
+# 預設讓 git 自行判斷文字檔並在 repo 內統一存成 LF
+* text=auto eol=lf
+
+# Unix 腳本：強制 LF，任何平台簽出都不得轉換
+*.sh            text eol=lf
+*.command       text eol=lf
+
+# Windows 批次檔：強制 CRLF，否則舊版 cmd.exe 解析會出問題
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# 二進位：不要做任何換行轉換，也不要試圖 diff
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.otf           binary
+*.ttf           binary
+*.mp4           binary
+*.mp3           binary
+*.wav           binary
+*.zip           binary
+*.exe           binary
+
+# 語言統計：讓 GitHub 不要把授權條款算進專案語言比例
+LICENSE         linguist-vendored
+NOTICE          linguist-vendored

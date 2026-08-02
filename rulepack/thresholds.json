@@ -1,0 +1,126 @@
+{
+  "$comment": "所有數值門檻。改這裡不需要動程式碼，也不需要重新安裝。",
+
+  "profiles": {
+    "$comment": [
+      "★ 使用者只需要選「快」或「準」，不該被問 model_size 或要不要二審。",
+      "每個 profile 是一組會一起變動的參數，選了就整組套用。",
+      "",
+      "實測基準：98 秒的口播影片（RTX 2060，已啟用 GPU 加速）。",
+      "沒有 GPU 的機器全部乘以 5-10 倍。"
+    ],
+
+    "fast": {
+      "$name": "效率模式",
+      "$desc": "快 2-3 倍、token 用量約 1/3。準確度略降但仍可用。適合初剪、大量素材、先看個大概。",
+      "$tradeoff": "辨識模型較小（medium），判斷一律用快模型，不做二審與回測。",
+      "asr": { "model_size": "medium" },
+      "llm": { "judge_tier": "fast", "suspect_escalation": false },
+      "verify": { "self_verify": false, "output_retest": false, "retest_max_rounds": 0 }
+    },
+
+    "balanced": {
+      "$name": "平衡模式",
+      "$desc": "預設。辨識用最準的模型，判斷用快模型，省掉最貴的回測輪。",
+      "$tradeoff": "多數情況下與精準模式的差別看不出來，但省一半時間。",
+      "asr": { "model_size": "large-v3" },
+      "llm": { "judge_tier": "fast", "suspect_escalation": true },
+      "verify": { "self_verify": true, "output_retest": false, "retest_max_rounds": 1 }
+    },
+
+    "precise": {
+      "$name": "精準模式",
+      "$desc": "不計成本求準。慢 2-3 倍、token 用量約 3 倍。交件前、重要影片用這個。",
+      "$tradeoff": "判斷改用強模型、疑義二審、剪完再回測驗證。",
+      "asr": { "model_size": "large-v3" },
+      "llm": { "judge_tier": "strong", "suspect_escalation": true },
+      "verify": { "self_verify": true, "output_retest": true, "retest_max_rounds": 2 }
+    }
+  },
+
+
+  "silence": {
+    "$comment": "ffmpeg silencedetect 抓長靜音。零成本、最可靠的一層。",
+    "noise_db": -30,
+    "min_silence_sec": 0.45,
+    "keep_silence_sec": 0.3,
+    "$keep_comment": "刻意保留 0.3 秒停頓：全部剪光會讓成片急促到不像人講話。",
+    "edge_pad_sec": 0.05
+  },
+
+  "gap": {
+    "$comment": "whisper 字級時間戳的異常空檔（字間卡頓）。",
+    "min_gap_sec": 0.6,
+    "keep_sec": 0.25,
+    "edge_pad_sec": 0.05,
+    "per_char_sec": 0.35,
+    "$per_char_comment": "一個字合理的發音時間。超過太多代表那個字被拖長或中間卡住。",
+    "min_word_excess_sec": 0.15,
+    "extreme_excess_sec": 0.6
+  },
+
+  "cut": {
+    "min_keep_sec": 0.2,
+    "$min_keep_comment": "保留片段短於此值就不值得單獨成段，併掉。",
+    "crf": 18,
+    "preset": "veryfast"
+  },
+
+  "restart": {
+    "$comment": "Paraformer 字流裡的重講候選偵測（確定性，不需 LLM）。",
+    "min_ngram": 2,
+    "max_gap_chars": 16,
+    "max_attempt_sec": 3.2,
+    "short_2gram_sec": 1.0,
+    "frame_sim": 0.5,
+    "strong_sim": 0.72,
+    "$sim_comment": [
+      "重講 vs 排比的區分靠相似度。實測「現在火鍋(真重講,0.55)」與",
+      "「基本功給做好(不同句,0.56)」幾乎一樣，機械門檻分不開 →",
+      "中等相似度(frame_sim~strong_sim)一律交給 LLM 做語意判斷。",
+      "高於 strong_sim 或第二次原樣重複第一次，才直接剪、不問 LLM。"
+    ]
+  },
+
+  "snap": {
+    "min_keep_gap": 0.12,
+    "$comment": "刀口對齊字邊界後若幾乎沒剩，代表那是 whisper 的假空隙，整刀丟掉。"
+  },
+
+  "safety": {
+    "$comment": [
+      "★ 暴走安全閥 —— 全系統最重要的防呆。",
+      "任何一層偵測若提議剪掉過多，只作廢『那一層』，不拖累其他穩定層。",
+      "沒有這個機制，一次 LLM 誤判就會把整支片剪爛。"
+    ],
+    "max_cut_ratio": 0.25,
+    "max_cut_count": 25,
+    "fragments_max_cut_ratio": 0.10,
+    "fragments_max_cut_count": 8,
+    "$fragments_comment": "破碎片段層更容易暴走，門檻設更嚴。"
+  },
+
+  "verify": {
+    "$comment": "下刀前後的自我修正迴圈。",
+    "self_verify": true,
+    "output_retest": true,
+    "retest_max_rounds": 2,
+    "$rounds_comment": "每輪都要重聽整支成片＋重編碼，很貴。實測第 3 輪多半只多抓 1 刀，CP 值低。"
+  },
+
+  "asr": {
+    "language": "zh",
+    "model_size": "large-v3",
+    "initial_prompt": "以下是繁體中文的口語內容。",
+    "$prompt_comment": "引導 whisper 用繁體。但 zh 繁簡看運氣，下游仍須 zhconv 保底。",
+    "chars_gap_split": 0.25,
+    "chars_max_len": 14
+  },
+
+  "llm": {
+    "$comment": "判斷腦行為。temperature 與 seed 由程式強制，不開放調整——決定性不能妥協。",
+    "suspect_escalation": true,
+    "$escalation_comment": "校字疑義二審：快模型標『請人工確認』的，用強模型帶上下文重讀一遍。",
+    "timeout_sec": 600
+  }
+}

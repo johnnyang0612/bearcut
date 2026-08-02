@@ -1,0 +1,24 @@
+{
+  "$comment": [
+    "BearCut 規則包 —— 引擎讀這裡的設定做判斷，程式碼本身不寫死任何門檻或 prompt。",
+    "這樣做的理由：剪輯的『手感』會持續迭代（門檻調鬆一點、prompt 講清楚一點），",
+    "而使用者不該為了拿到這些改進而重新下載整個程式。",
+    "",
+    "engine_min / engine_max 是相容性宣告：規則包若用到新引擎才有的功能，",
+    "舊引擎載入時要能明確擋下並給白話提示，而不是跑出莫名其妙的結果。"
+  ],
+  "name": "bearcut-base",
+  "title": "BearCut 基礎規則包",
+  "version": "0.1.0",
+  "released": "2026-07-20",
+  "engine_min": "0.1.0",
+  "engine_max": null,
+  "license": "見 LICENSE-RULEPACK.md（不隨引擎的 Apache-2.0 授權釋出）",
+  "description": "免費版隨附的基礎規則：偵測門檻、安全閥、判斷 prompt、字幕與字卡樣式。",
+  "files": {
+    "thresholds": "thresholds.json",
+    "prompts": "prompts/",
+    "styles": "styles/",
+    "cards": "cards/"
+  }
+}

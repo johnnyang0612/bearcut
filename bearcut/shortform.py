@@ -1,0 +1,127 @@
+# -*- coding: utf-8 -*-
+# BearCut — © 2026 川輝科技有限公司 (Brightstream Technology Co., Ltd.)
+# Licensed under the Apache License, Version 2.0. See LICENSE and NOTICE.
+"""短影音成片 —— 把剪好的片變成可以直接發的直式短片。
+
+流程：字幕 → 挑金句做字卡 → （選用）追講者裁切 → 轉直式燒錄 → 封面
+
+## 與順剪的分工
+
+`pipeline.analyze()` 負責「剪掉不該留的」，這裡負責「把留下的包裝好」。
+兩者分開的理由：剪輯是耗時的（辨識 + 判斷 + 編碼），而視覺包裝常常要重做幾次
+（換標題、換字卡、調顏色）。分開就不必為了改一個字卡重跑整個辨識。
+"""
+
+import os
+from typing import Callable, List, Optional
+
+from . import media
+from .env.platform import ROOT
+from .rules import load as load_rules
+from .srtlint import parse_srt
+from .visual import cards as _cards
+from .visual import cover as _cover
+from .visual import speaker as _speaker
+from .visual import vertical as _vert
+
+FONTS = str(ROOT / "assets" / "fonts")
+
+
+def _srt_to_subs(srt_path: str) -> List[dict]:
+    """SRT → 內部字幕格式。"""
+    def sec(ts):
+        try:
+            h, m, rest = ts.split(":")
+            s, ms = rest.split(",")
+            return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+        except (ValueError, AttributeError):
+            return 0.0
+
+    return [{"start": sec(c["start"]), "end": sec(c["end"]),
+             "text": c["text"].replace("\n", "")}
+            for c in parse_srt(srt_path)]
+
+
+def make(video: str, srt: Optional[str] = None,
+         title: Optional[str] = None, cta: Optional[str] = None,
+         output_dir: Optional[str] = None,
+         use_cards: bool = True, follow_speaker: bool = False,
+         logo: Optional[str] = None, make_cover: bool = True,
+         progress_cb: Optional[Callable] = None) -> dict:
+    """把一支剪好的片做成直式短影音。回產出的路徑。"""
+    def report(p, m):
+        if progress_cb:
+            progress_cb(p, m)
+
+    if not os.path.exists(video):
+        raise FileNotFoundError(f"找不到影片：{video}")
+
+    d = output_dir or os.path.dirname(os.path.abspath(video))
+    base = os.path.splitext(os.path.basename(video))[0].replace("_淨毛片", "")
+    os.makedirs(d, exist_ok=True)
+    out = {
+        "video": os.path.join(d, f"{base}_直式.mp4"),
+        "cover": os.path.join(d, f"{base}_封面.jpg"),
+        "ass": os.path.join(d, f"{base}_直式.ass"),
+    }
+
+    # 字幕：沒指定就找同名的
+    srt = srt or os.path.splitext(video)[0].replace("_淨毛片", "") + "_字幕.srt"
+    subs = _srt_to_subs(srt) if os.path.exists(srt) else []
+    if not subs:
+        report(95, "⚠ 找不到字幕檔，直式短片將不含字幕。"
+                   "先跑 bearcut cut 產生字幕會更完整。")
+
+    # 大字卡
+    card_list = []
+    if use_cards and subs:
+        from .llm import get_llm
+        llm = get_llm()
+        if llm.available():
+            segs = [{"start": s["start"], "end": s["end"], "text": s["text"]}
+                    for s in subs]
+            try:
+                dur = media.get_duration(video)
+            except Exception:
+                dur = 60.0
+            card_list = _cards.pick(segs, llm, dur, progress_cb=progress_cb)
+
+    # 追講者（選用）：偵測不到或多人就自動退回不裁切
+    src = video
+    if follow_speaker:
+        faces = _speaker.detect_faces(video, progress_cb=progress_cb)
+        sw, sh = _speaker.__dict__.get("_probe", lambda v: (0, 0))(video) \
+            if False else (0, 0)
+        from .visual.reframe import probe_size, render as reframe_render
+        sw, sh = probe_size(video)
+        box = _speaker.crop_box(faces, sw, sh) if faces else None
+        if box:
+            tmp = os.path.join(d, f"{base}_追講者.mp4")
+            src = reframe_render(video, tmp, box, progress_cb=progress_cb)
+            report(96, "已裁切到講者")
+        else:
+            report(96, "改用不裁切版面（雙人或偵測不到臉，避免漏人）")
+
+    long_form = False
+    try:
+        long_form = media.get_duration(video) > 180
+    except Exception:
+        pass
+
+    _vert.build_ass(subs, out["ass"], title=title, cta=cta,
+                    card_list=card_list, long_form=long_form)
+    _vert.render(src, out["ass"], out["video"], FONTS, logo=logo,
+                 progress_cb=progress_cb)
+
+    if make_cover:
+        main = (card_list[0]["key"] if card_list else (title or base))[:12]
+        sub = (card_list[0]["top"] if card_list else "")[:16]
+        c = _cover.make(out["video"], out["cover"], main=main, sub=sub,
+                        brand=load_rules().get("brand.name", ""))
+        if c:
+            report(99, f"封面已產出：{os.path.basename(c)}")
+        else:
+            out.pop("cover", None)
+
+    out["cards"] = card_list
+    return out

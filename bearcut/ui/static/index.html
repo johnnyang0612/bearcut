@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BearCut 自動順剪</title>
+<style>
+:root{
+  --bg:#12141a; --panel:#1b1f27; --panel2:#232833; --line:#2e3441;
+  --ink:#e8eaf0; --soft:#a3a9b8; --faint:#6f7686;
+  --accent:#e6b35a; --accent-d:#c4923c; --ok:#56c078; --warn:#e0b455; --err:#e0705d;
+  --r:14px;
+}
+@media (prefers-color-scheme:light){
+  :root{--bg:#eeece6;--panel:#fff;--panel2:#f6f4ef;--line:#ddd9d0;
+        --ink:#22242b;--soft:#5a5e68;--faint:#8b909c;--accent:#c47f20;--accent-d:#a86a15;}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Microsoft JhengHei UI","PingFang TC","Noto Sans TC",system-ui,sans-serif;
+  line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{max-width:760px;margin:0 auto;padding:28px 20px 60px}
+
+header{display:flex;align-items:center;gap:14px;margin-bottom:6px}
+header .logo{height:40px;width:auto;border-radius:8px}
+header h1{font-size:1.45rem;margin:0;font-weight:800;letter-spacing:-.01em}
+header .sub{color:var(--soft);font-size:.85rem;margin-top:2px}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  padding:20px;margin-top:16px}
+
+/* 環境狀態 */
+#env{display:flex;align-items:center;gap:10px;font-size:.88rem;color:var(--soft);
+  padding:10px 14px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);
+  margin-top:14px}
+#env .dot{width:9px;height:9px;border-radius:50%;background:var(--faint);flex:0 0 auto}
+#env.ok .dot{background:var(--ok)} #env.bad .dot{background:var(--err)}
+
+/* 拖放區 */
+#drop{border:2px dashed var(--line);border-radius:var(--r);padding:44px 20px;text-align:center;
+  transition:border-color .15s,background .15s;cursor:pointer;background:var(--panel)}
+#drop:hover,#drop.over{border-color:var(--accent);background:var(--panel2)}
+#drop .big{font-size:2.4rem;line-height:1;margin-bottom:12px}
+#drop .t{font-weight:700;font-size:1.05rem}
+#drop .h{color:var(--faint);font-size:.85rem;margin-top:6px}
+#drop.has{border-style:solid;border-color:var(--accent)}
+#fname{font-family:ui-monospace,Consolas,monospace;font-size:.9rem;color:var(--accent);
+  word-break:break-all;margin-top:8px}
+
+/* 模式 */
+.modes{display:flex;flex-direction:column;gap:10px;margin-top:6px}
+.mode{display:flex;gap:12px;align-items:flex-start;padding:13px 15px;border-radius:11px;
+  border:1px solid var(--line);background:var(--panel2);cursor:pointer;transition:border-color .15s}
+.mode:hover{border-color:var(--accent-d)}
+.mode input{margin-top:4px;accent-color:var(--accent);flex:0 0 auto}
+.mode.sel{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--panel2))}
+.mode .n{font-weight:700}
+.mode .d{color:var(--soft);font-size:.85rem;margin-top:2px}
+.mode .tw{color:var(--faint);font-size:.79rem;margin-top:4px}
+
+button.go{width:100%;margin-top:18px;padding:15px;border:0;border-radius:12px;
+  background:var(--accent);color:#1a1408;font-weight:800;font-size:1.05rem;cursor:pointer;
+  transition:filter .15s}
+button.go:hover:not(:disabled){filter:brightness(1.07)}
+button.go:disabled{opacity:.45;cursor:not-allowed}
+
+/* 進度 */
+#prog{display:none}
+.bar{height:9px;border-radius:99px;background:var(--panel2);overflow:hidden;margin:14px 0 10px}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .4s ease}
+#pmsg{font-size:.95rem;font-weight:600}
+#ptime{color:var(--faint);font-size:.82rem;margin-top:2px}
+#plog{margin-top:14px;max-height:170px;overflow:auto;background:var(--panel2);
+  border-radius:10px;padding:12px 14px;font-size:.79rem;color:var(--soft);
+  font-family:ui-monospace,Consolas,monospace;line-height:1.65}
+
+/* 結果 */
+#done{display:none}
+.stats{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
+.stat{flex:1;min-width:110px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:11px;padding:12px 14px}
+.stat b{display:block;font-size:1.35rem;color:var(--accent);font-variant-numeric:tabular-nums}
+.stat span{font-size:.79rem;color:var(--faint)}
+.files{display:flex;flex-direction:column;gap:7px;margin-top:6px}
+.file{display:flex;gap:10px;align-items:center;font-size:.86rem;color:var(--soft);
+  background:var(--panel2);border-radius:9px;padding:9px 13px}
+.file b{color:var(--ink);font-weight:600;flex:0 0 92px}
+.file span{font-family:ui-monospace,Consolas,monospace;font-size:.79rem;word-break:break-all}
+.row{display:flex;gap:10px;margin-top:16px}
+.row button{flex:1;padding:12px;border-radius:11px;border:1px solid var(--line);
+  background:var(--panel2);color:var(--ink);font-weight:700;cursor:pointer;font-size:.92rem}
+.row button:hover{border-color:var(--accent)}
+.row button.pri{background:var(--accent);color:#1a1408;border-color:var(--accent)}
+
+/* 複核時間軸：一眼看出剪了哪裡 */
+.tl{display:flex;height:34px;border-radius:8px;overflow:hidden;background:var(--panel2);
+  border:1px solid var(--line);margin:10px 0 8px}
+.tl div{transition:filter .12s}
+.tl div:hover{filter:brightness(1.35)}
+.tl .k{background:var(--ok);opacity:.8}
+.tl .c{background:repeating-linear-gradient(45deg,var(--err),var(--err) 3px,transparent 3px,transparent 6px);
+  border-left:1px solid var(--err);border-right:1px solid var(--err)}
+.tlkey{display:flex;gap:16px;font-size:.78rem;color:var(--soft);flex-wrap:wrap}
+.tlkey i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.tlkey .k{background:var(--ok)}
+.tlkey .c{background:repeating-linear-gradient(45deg,var(--err),var(--err) 2px,transparent 2px,transparent 4px);
+  border:1px solid var(--err)}
+#warns div{font-size:.85rem;color:var(--soft);background:var(--panel2);border-radius:9px;
+  padding:9px 13px;margin-bottom:6px;border-left:3px solid var(--warn)}
+
+#err{display:none;background:color-mix(in srgb,var(--err) 12%,var(--panel));
+  border:1px solid var(--err);border-radius:var(--r);padding:16px 18px;margin-top:16px}
+#err b{color:var(--err)}
+#err pre{white-space:pre-wrap;font-size:.85rem;color:var(--soft);margin:8px 0 0}
+
+.hint{color:var(--faint);font-size:.82rem;margin-top:10px}
+
+/* Pro 授權碼：預設收起來。這是本機剪片工具，設定不該跟主流程搶畫面 */
+#auth{margin-top:16px}
+#auth summary{cursor:pointer;font-size:.85rem;color:var(--soft);list-style:none;
+  padding:10px 14px;border:1px solid var(--line);border-radius:11px;background:var(--panel)}
+#auth summary::-webkit-details-marker{display:none}
+#auth summary:hover{border-color:var(--accent-d)}
+#auth[open] summary{border-radius:11px 11px 0 0;border-bottom:0}
+#authbody{border:1px solid var(--line);border-top:0;border-radius:0 0 11px 11px;
+  background:var(--panel);padding:14px 16px 16px}
+#authbody input{width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);
+  background:var(--panel2);color:var(--ink);font-family:ui-monospace,Consolas,monospace;
+  font-size:.85rem}
+#authbody input:focus{outline:0;border-color:var(--accent)}
+#authmsg{font-size:.82rem;margin-top:10px;color:var(--soft)}
+#authmsg.bad{color:var(--err)}
+#authmsg.good{color:var(--ok)}
+
+footer{margin-top:34px;padding-top:18px;border-top:1px solid var(--line);
+  color:var(--faint);font-size:.78rem;text-align:center}
+h2{font-size:1rem;margin:0 0 12px;font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <img class="logo" src="/static/logo.png" alt="" onerror="this.style.display='none'">
+    <div>
+      <h1>BearCut 自動順剪</h1>
+      <div class="sub">把毛片剪成可用的成片，並自己檢查剪得對不對</div>
+    </div>
+  </header>
+
+  <div id="env"><span class="dot"></span><span id="envtxt">檢查環境中…</span></div>
+
+  <div id="setup" class="card" style="display:none">
+    <h2>環境還沒準備好</h2>
+    <div id="setuptxt" class="hint"></div>
+    <p class="hint">請關掉這個視窗，回到資料夾雙擊 <b>START_HERE</b> 完成安裝，再重新開啟。</p>
+  </div>
+
+  <div id="main">
+    <div id="drop" class="card">
+      <div class="big">🎬</div>
+      <div class="t">把影片拖進來</div>
+      <div class="h">或點一下選擇檔案　·　支援 MP4 / MOV / MKV / AVI</div>
+      <div id="fname"></div>
+      <input id="file" type="file" accept="video/*" hidden>
+    </div>
+
+    <div class="card">
+      <h2>剪輯模式</h2>
+      <div class="modes" id="modes"></div>
+      <button class="go" id="go" disabled>▶　開始自動剪</button>
+      <div class="hint">影片越長跑越久。一支 100 秒的片大約 3–20 分鐘，過程中可以放著不管。</div>
+    </div>
+  </div>
+
+  <div id="prog" class="card">
+    <h2>處理中</h2>
+    <div id="pmsg">準備中…</div>
+    <div class="bar"><i id="pbar"></i></div>
+    <div id="ptime"></div>
+    <div id="plog"></div>
+  </div>
+
+  <div id="err" class="card"><b>發生問題</b><pre id="errtxt"></pre></div>
+
+  <div id="done" class="card">
+    <h2>剪好了 ✓</h2>
+    <div class="stats" id="stats"></div>
+
+    <div id="tlwrap" style="display:none">
+      <h2 style="margin-top:18px">剪了哪些</h2>
+      <div class="tl" id="tl"></div>
+      <div class="tlkey">
+        <span><i class="k"></i>保留</span><span><i class="c"></i>剪掉</span>
+        <span style="color:var(--faint)">滑過看原因</span>
+      </div>
+    </div>
+
+    <div id="warnwrap" style="display:none">
+      <h2 style="margin-top:18px">品質提醒</h2>
+      <div id="warns"></div>
+    </div>
+
+    <div class="files" id="files"></div>
+    <div class="row">
+      <button class="pri" id="openf">📂　打開資料夾</button>
+      <button id="again">再剪一支</button>
+    </div>
+    <div class="hint">覺得剪得不對？打開「剪輯判斷對照」可以逐刀看原因，
+      改「待剪清單」後重剪不必再跑一次辨識。</div>
+  </div>
+
+  <details id="auth">
+    <summary id="authsum">🔑　Pro 授權碼</summary>
+    <div id="authbody">
+      <div class="hint" style="margin-top:0">
+        訂閱 Pro 之後，把信裡的授權碼貼進來，按「更新規則包」就會拿到最新的爆款規則。
+        沒有授權碼也能照常剪片，用的是隨程式附的基礎規則包。</div>
+      <input id="authtok" type="password" placeholder="把授權碼貼在這裡"
+             autocomplete="off" spellcheck="false">
+      <div class="row">
+        <button class="pri" id="authsave">存起來</button>
+        <button id="authclear">刪掉授權碼</button>
+      </div>
+      <div id="authmsg"></div>
+    </div>
+  </details>
+
+  <footer>
+    © 熊董 × 川輝科技 Brightstream Technology．版權所有<br>
+    <span id="ver"></span>
+  </footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let picked = null, mode = null, jobId = null, t0 = 0, timer = null;
+
+// ── 啟動：讀環境與模式 ──────────────────────────────────────────
+fetch('/api/info').then(r => r.json()).then(info => {
+  $('#ver').textContent = 'BearCut ' + info.version;
+
+  const env = $('#env');
+  env.className = info.ready ? 'ok' : 'bad';
+  $('#envtxt').textContent = info.ready
+    ? `就緒　·　${info.gpu}　·　${info.llm}`
+    : `環境不完整：缺 ${info.blocking.join('、')}`;
+
+  if (!info.ready) {
+    $('#main').style.display = 'none';
+    $('#setup').style.display = '';
+    $('#setuptxt').innerHTML = info.blocking
+      .map(k => `<div>• ${info.checks[k].detail} → ${info.checks[k].fix}</div>`).join('');
+    return;
+  }
+
+  mode = info.default_profile;
+  $('#modes').innerHTML = Object.entries(info.profiles).map(([k, p]) => `
+    <label class="mode ${k === mode ? 'sel' : ''}" data-k="${k}">
+      <input type="radio" name="m" value="${k}" ${k === mode ? 'checked' : ''}>
+      <div><div class="n">${p.name}</div><div class="d">${p.desc}</div>
+      ${p.tradeoff ? `<div class="tw">${p.tradeoff}</div>` : ''}</div>
+    </label>`).join('');
+
+  $('#modes').addEventListener('change', e => {
+    mode = e.target.value;
+    document.querySelectorAll('.mode').forEach(el =>
+      el.classList.toggle('sel', el.dataset.k === mode));
+  });
+});
+
+// ── Pro 授權碼 ──────────────────────────────────────────────────
+// 走 /api/auth，後端是 CLI login 那支同一個 save_token()，行為不會分岔。
+function authMsg(text, cls) {
+  const el = $('#authmsg');
+  el.textContent = text || '';
+  el.className = cls || '';
+}
+
+function paintAuth(st) {
+  $('#authsum').textContent = st.has_token
+    ? `🔑　Pro 授權碼：已設定（${st.masked}）`
+    : '🔑　Pro 授權碼';
+  if (st.has_token && st.source && st.source.indexOf('環境變數') === 0) {
+    authMsg('目前用的是環境變數 BEARCUT_TOKEN，會蓋過這裡存的授權碼。', '');
+  }
+}
+
+fetch('/api/auth').then(r => r.json()).then(paintAuth).catch(() => {});
+
+$('#authsave').onclick = async () => {
+  const tok = $('#authtok').value.trim();
+  if (!tok) { authMsg('請先把授權碼貼上。', 'bad'); return; }
+  authMsg('儲存中…', '');
+  try {
+    const r = await fetch('/api/auth', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: tok}),
+    });
+    const j = await r.json();
+    if (!r.ok) { authMsg(j.detail || '存不起來。', 'bad'); return; }
+    $('#authtok').value = '';
+    authMsg((j.warning ? '⚠ ' + j.warning + '　' : '') +
+            '已存好。接下來按「更新規則包」就會拿 Pro 規則包。',
+            j.warning ? '' : 'good');
+    paintAuth(await (await fetch('/api/auth')).json());
+  } catch (e) {
+    authMsg('存不起來：' + e, 'bad');
+  }
+};
+
+$('#authclear').onclick = async () => {
+  try {
+    const r = await fetch('/api/auth', {method: 'DELETE'});
+    const j = await r.json();
+    if (!r.ok) { authMsg(j.detail || '刪不掉。', 'bad'); return; }
+    authMsg(j.existed ? '已刪掉存起來的授權碼。剪片照常。'
+                      : '本來就沒有存授權碼。', '');
+    paintAuth(await (await fetch('/api/auth')).json());
+  } catch (e) {
+    authMsg('刪不掉：' + e, 'bad');
+  }
+};
+
+// ── 選檔 ────────────────────────────────────────────────────────
+const drop = $('#drop');
+drop.onclick = () => $('#file').click();
+$('#file').onchange = e => { if (e.target.files[0]) setFile(e.target.files[0]); };
+
+['dragenter', 'dragover'].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+
+function setFile(f) {
+  // 瀏覽器基於安全考量不給完整路徑，只能拿到檔名。
+  // 對本機工具來說這是硬限制，所以請使用者確認完整路徑。
+  picked = f.path || f.name;
+  $('#fname').textContent = picked;
+  drop.classList.add('has');
+  $('#go').disabled = false;
+  if (!f.path) {
+    $('#fname').innerHTML = picked +
+      '<div class="hint" style="margin-top:6px">瀏覽器只給得到檔名。' +
+      '若下一步找不到檔案，請把完整路徑貼進來：' +
+      '<input id="full" style="width:100%;margin-top:6px;padding:8px;border-radius:8px;' +
+      'border:1px solid var(--line);background:var(--panel2);color:var(--ink)" ' +
+      'placeholder="例：E:\\影片\\我的毛片.mov"></div>';
+    setTimeout(() => {
+      const el = $('#full');
+      if (el) el.oninput = () => { if (el.value.trim()) picked = el.value.trim(); };
+    }, 0);
+  }
+}
+
+// ── 開跑 ────────────────────────────────────────────────────────
+$('#go').onclick = async () => {
+  $('#go').disabled = true;
+  const r = await fetch('/api/start', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ video: picked, mode })
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    return showErr(d.detail || '無法開始，請確認影片路徑正確');
+  }
+  jobId = (await r.json()).id;
+  $('#main').style.display = 'none';
+  $('#prog').style.display = '';
+  t0 = Date.now();
+  timer = setInterval(poll, 1200);
+  poll();
+};
+
+async function poll() {
+  const j = await (await fetch('/api/job/' + jobId)).json();
+  $('#pbar').style.width = j.percent + '%';
+  $('#pmsg').textContent = j.message;
+  const s = Math.round((Date.now() - t0) / 1000);
+  $('#ptime').textContent = `已經過 ${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+  $('#plog').innerHTML = j.log.map(l => `<div>${esc(l)}</div>`).join('');
+  $('#plog').scrollTop = $('#plog').scrollHeight;
+
+  if (!j.done) return;
+  clearInterval(timer);
+  $('#prog').style.display = 'none';
+  if (j.error) return showErr(j.error);
+  showDone(j.result);
+}
+
+function showDone(res) {
+  const s = res.summary;
+  $('#stats').innerHTML = s['剪掉比例'] ? `
+    <div class="stat"><b>${s['剪掉比例']}</b><span>剪掉比例</span></div>
+    <div class="stat"><b>${Math.round(s['剪後秒'])}s</b><span>成片長度</span></div>
+    <div class="stat"><b>${Math.round(s['剪掉秒'])}s</b><span>省下時間</span></div>`
+    : Object.entries(s).map(([k, v]) =>
+        `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
+
+  // 複核時間軸：把整支片畫成一條，綠色保留、紅色剪掉，滑過看原因。
+  // 讓使用者一眼看出「剪在哪裡、剪得密不密」，比讀一份逐刀清單快得多。
+  if (res.keep && res.duration) {
+    const D = res.duration, seg = [];
+    let pos = 0;
+    (res.cuts || []).forEach(c => {
+      if (c.start > pos) seg.push({ t: 'k', a: pos, b: c.start });
+      seg.push({ t: 'c', a: c.start, b: c.end, why: (c.reasons || []).join('；') });
+      pos = Math.max(pos, c.end);
+    });
+    if (pos < D) seg.push({ t: 'k', a: pos, b: D });
+    $('#tl').innerHTML = seg.map(x =>
+      `<div class="${x.t}" style="flex:${Math.max(0.001, x.b - x.a)}" title="${
+        esc(x.t === 'c' ? `${x.a.toFixed(1)}s–${x.b.toFixed(1)}s\n${x.why || '剪掉'}`
+                        : `保留 ${x.a.toFixed(1)}s–${x.b.toFixed(1)}s`)}"></div>`).join('');
+    $('#tlwrap').style.display = '';
+  }
+
+  if ((res.issues || []).length) {
+    $('#warns').innerHTML = res.issues.map(x => `<div>${esc(x)}</div>`).join('');
+    $('#warnwrap').style.display = '';
+  }
+
+  const label = { output: '淨毛片', video: '直式短片', cover: '封面',
+                  srt: '字幕 SRT', v1: '字幕校對', review: '剪輯判斷對照',
+                  plan: '待剪清單', qa: '品質報告' };
+  $('#files').innerHTML = Object.entries(res.files)
+    .filter(([k]) => label[k])
+    .map(([k, v]) => `<div class="file"><b>${label[k]}</b><span>${esc(v.split(/[\\/]/).pop())}</span></div>`).join('');
+  $('#openf').onclick = () => fetch('/api/open', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: res.folder })
+  });
+  $('#done').style.display = '';
+}
+
+function showErr(msg) {
+  $('#errtxt').textContent = msg;
+  $('#err').style.display = '';
+  $('#main').style.display = '';
+  $('#go').disabled = false;
+}
+
+$('#again').onclick = () => location.reload();
+const esc = s => String(s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+</script>
+</body>
+</html>

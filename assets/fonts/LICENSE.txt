@@ -1,0 +1,12 @@
+Source Han Sans TC (思源黑體)
+Copyright 2014-2021 Adobe (http://www.adobe.com/)
+
+Licensed under the SIL Open Font License, Version 1.1.
+https://scripts.sil.org/OFL
+
+This font is bundled with BearCut so that text rendering is identical on every
+machine — subtitles, cards and covers must not depend on whatever fonts the
+user happens to have installed.
+
+字型隨 BearCut 一起散布，確保每台機器的文字呈現完全一致——
+字幕、字卡與封面不能依賴使用者剛好裝了什麼字型。

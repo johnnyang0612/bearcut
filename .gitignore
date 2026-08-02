@@ -1,0 +1,43 @@
+# 注意：git 只把「整行開頭」的 # 當註解。
+# 寫成 `vendor/   # 說明` 會讓整串變成模式的一部分而失效——別這樣寫。
+
+# --- 執行期產物（體積大、各平台不同，絕對不要進版控）---
+vendor/
+.venv/
+models/
+*.log
+
+# --- 使用者素材與輸出 ---
+# 開發時常把測試影片丟在 repo 裡，一律擋掉，避免不小心把客戶素材推上去
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.mp3
+*.wav
+*.m4a
+
+# 若日後要放 demo 素材，放進 assets/ 並解除下面這行的封鎖
+!assets/**/*.mp4
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- 設定與祕密 ---
+.env
+*.local.json
+settings.local.json
+
+# --- 編輯器 / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,42 @@
+# BearCut — Python 相依套件
+# 安裝方式：python bootstrap.py（會自動建虛擬環境並裝這裡列的東西）
+#
+# 非 pip 的外部相依（bootstrap.py 會自動下載到 vendor/，不需要你動手）：
+#   ffmpeg / ffprobe
+#
+# GUI 走瀏覽器，字型隨專案內建，都不需要另外安裝。
+
+# --- 語音辨識 ---------------------------------------------------------------
+# whisper：順稿用，產乾淨的繁體字幕
+faster-whisper>=1.2.0
+
+# Paraformer：中文逐字，字級精準時間戳、完整保留重複與結巴。
+# 所有切點的實際秒數都由它反查——whisper 會把重講順掉，不能拿來定時間。
+funasr>=1.3.0
+torch>=2.2.0
+torchaudio>=2.2.0
+
+# modelscope 一定要鎖 1.20.0：1.38 版改了 HubConfig API（_logged_out），
+# funasr 1.3.x 下載 Seaco 逐字模型會崩、字級時間戳整層失效。
+# 1.20.0 實測可正常下載並回傳字級 timestamp。改版前請先實跑驗證。
+modelscope==1.20.0
+addict            # modelscope 執行期需要，但未列入其相依，缺了會在下載模型時炸
+
+# funasr 會用到 editdistance；Windows 若安裝失敗（需要編 C++），
+# 改裝預編好的 Levenshtein 當替代即可。
+editdistance>=0.6.0
+
+# --- 影像與字幕 -------------------------------------------------------------
+Pillow>=10.0.0    # 封面合成、取景預覽
+jieba>=0.42.1     # 字幕安全斷句（只在詞與詞之間換行，不切破詞）
+zhconv>=1.4.3     # 簡轉繁：whisper/LLM 偶爾吐簡體，統一成台灣正體
+
+# 追講者臉部偵測用 OpenCV 內建 Haar cascade。
+# 鎖 4.x：opencv 5.0 拿掉了內建 Haar 與 CascadeClassifier。
+# 選用性質——沒裝時直式版面自動退回模糊填底，不會整條掛掉。
+opencv-python==4.11.0.86
+
+# --- 本機網頁 UI ------------------------------------------------------------
+fastapi>=0.115.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9   # 影片上傳（拖放）用
