@@ -1,0 +1,7 @@
+  找不到 Python，這是執行 BearCut 的必要元件。
+
+  請照以下步驟做，大約三分鐘：
+    1. 按 Enter 會自動開啟 Python 官方下載頁
+    2. 下載並執行安裝檔
+    3. 安裝時務必勾選「Add python.exe to PATH」
+    4. 裝完後回來重新雙擊 START_HERE

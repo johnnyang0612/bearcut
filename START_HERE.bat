@@ -1,16 +1,35 @@
 @echo off
 chcp 65001 >nul 2>&1
-title BearCut - 自動順剪
+title BearCut
 cd /d "%~dp0"
 
+rem ============================================================
+rem  THIS FILE MUST STAY PURE ASCII. Do not put Chinese here.
+rem
+rem  Why: cmd.exe parses a .bat using the SYSTEM codepage (cp950 on
+rem  Traditional Chinese Windows), not the console codepage. "chcp 65001"
+rem  fixes display but NOT parsing. When a UTF-8 Chinese character's
+rem  second byte happens to be 0x26 (&) or 0x7C (|), cmd splits the line
+rem  there and tries to run the tail as a command -- the user sees
+rem  "'...' is not recognized as an internal or external command"
+rem  on the very first thing they ever do with BearCut.
+rem
+rem  All Chinese text lives in assets\messages\*.txt (UTF-8) and is
+rem  printed with "type", which emits raw bytes the console renders
+rem  correctly. Everything after Python starts is printed by Python,
+rem  which handles UTF-8 properly (see bearcut/env/platform.py).
+rem ============================================================
+
+set "MSG=assets\messages"
+
 echo.
-echo   BearCut 自動順剪
-echo   (c) 熊董 x 川輝科技 Brightstream Technology
+echo   BearCut
+echo   (c) Brightstream Technology
 echo   ----------------------------------------------------
 echo.
 
-rem 找 Python。Windows 官方安裝器會裝 py 啟動器，優先用它挑 3.x；
-rem 沒有再退回 python。兩個都沒有就引導使用者去安裝，不要丟錯誤碼給人看。
+rem Find Python. The official Windows installer ships the "py" launcher,
+rem prefer it so we get 3.x; fall back to "python" on PATH.
 set "PY="
 where py >nul 2>&1 && set "PY=py -3"
 if not defined PY (
@@ -18,41 +37,40 @@ if not defined PY (
 )
 
 if not defined PY (
-    echo   找不到 Python，這是執行 BearCut 的必要元件。
-    echo.
-    echo   請照以下步驟做，大約三分鐘：
-    echo     1. 按 Enter 會自動開啟 Python 官方下載頁
-    echo     2. 下載並執行安裝檔
-    echo     3. 安裝時務必勾選 "Add python.exe to PATH"
-    echo     4. 裝完後回來重新雙擊這個檔案
+    if exist "%MSG%\no_python.txt" (
+        type "%MSG%\no_python.txt"
+    ) else (
+        echo   Python not found. Please install Python 3.9+ from python.org
+        echo   and tick "Add python.exe to PATH" during setup.
+    )
     echo.
     pause
     start "" "https://www.python.org/downloads/"
     exit /b 1
 )
 
-rem 首次執行沒有 .venv，跑安裝；之後就跳過直接開 UI
+rem First run has no .venv -- install. Afterwards skip straight to the UI.
 if not exist ".venv\Scripts\python.exe" (
-    echo   第一次執行，開始安裝所需元件。
-    echo   會下載約 2-3 GB，時間依網速而定，請不要關閉視窗。
+    if exist "%MSG%\first_run.txt" type "%MSG%\first_run.txt"
     echo.
     %PY% bootstrap.py
     if errorlevel 1 (
         echo.
-        echo   安裝沒有完成，請看上面的訊息。
-        echo   多數情況重跑一次就會好；若持續失敗請把畫面截圖回報。
+        if exist "%MSG%\install_failed.txt" (
+            type "%MSG%\install_failed.txt"
+        ) else (
+            echo   Setup did not finish. See the messages above.
+        )
         echo.
         pause
         exit /b 1
     )
 )
 
-echo.
-echo   啟動中，瀏覽器會自動打開...
-echo   （關掉這個視窗就會停止）
+if exist "%MSG%\starting.txt" type "%MSG%\starting.txt"
 echo.
 ".venv\Scripts\python.exe" cli.py ui
 
 echo.
-echo   已停止。
+if exist "%MSG%\stopped.txt" type "%MSG%\stopped.txt"
 pause
