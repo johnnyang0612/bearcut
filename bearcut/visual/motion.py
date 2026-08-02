@@ -53,6 +53,9 @@ _CN = {"零": 0, "〇": 0, "一": 1, "二": 2, "兩": 2, "三": 3, "四": 4,
 _CN_UNIT = {"十": 10, "百": 100, "千": 1000, "萬": 10000, "億": 100000000}
 
 SUPPORTED = ("counter", "bar", "progress", "ring", "trend", "compare", "steps")
+# fx = 用 HTML/CSS 模板渲染的精緻動畫（圓角、漸層、光暈、環形圖）。
+# ASS 畫不出那些，所以走瀏覽器；模板住在規則包裡，是資料不是程式碼。
+FX = "fx"
 
 
 def _cn_to_int(s: str) -> Optional[int]:
@@ -105,6 +108,79 @@ def _traceable(value: float, text: str) -> bool:
             return True
         # 5000 對「五千」、70 對「七成」都在 _numbers_in 處理過了
     return False
+
+
+def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
+    """驗一條 fx（HTML 模板）視覺。
+
+    追溯只套在**畫面上會被讀成事實**的欄位（宣告檔裡 factual: true 的）。
+    長條的相對高度沒有標數字，觀眾不會把它讀成一個事實，所以是裝飾、不驗——
+    但只要有一個標了數字的欄位對不上原文，整條丟掉。
+    """
+    name = str(v.get("template", "")).strip()
+    if name not in tpls:
+        return None
+    try:
+        i = int(v["seg"]) - 1
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (0 <= i < len(segments)):
+        return None
+
+    meta = tpls[name]["meta"]
+    spec_fields = meta.get("fields") or {}
+    text = segments[i].get("text", "")
+    fields = v.get("fields") or {}
+    if not isinstance(fields, dict):
+        return None
+
+    out_fields = {}
+    for key, decl in spec_fields.items():
+        if key not in fields:
+            continue
+        val = fields[key]
+        if decl.get("type") == "number":
+            try:
+                num = float(val)
+            except (TypeError, ValueError):
+                continue
+            if decl.get("factual") and not _traceable(num, text):
+                return None          # 畫面上會被當事實的數字，對不上就整條丟掉
+            lo, hi = decl.get("min"), decl.get("max")
+            if lo is not None:
+                num = max(float(lo), num)
+            if hi is not None:
+                num = min(float(hi), num)
+            out_fields[key] = int(num) if abs(num - int(num)) < 0.01 else round(num, 1)
+        else:
+            out_fields[key] = str(val).strip()[: int(decl.get("max") or 40)]
+
+    if not out_fields:
+        return None
+
+    # 衍生欄位（例如 ringDeg = ringPct * 3.6）由宣告檔算，判斷腦不用填
+    for dk, expr in (meta.get("derived") or {}).items():
+        if dk.startswith("$"):
+            continue
+        try:
+            src, _, mul = str(expr).partition("*")
+            base = out_fields.get(src.strip())
+            if base is not None:
+                out_fields[dk] = round(float(base) * float(mul.strip() or 1), 2)
+        except (TypeError, ValueError):
+            pass
+
+    start = float(segments[i]["start"])
+    dur = float(meta.get("dur") or 1.6)
+    end = min(float(segments[i]["end"]), start + HOLD_SEC + dur)
+    if end - start < 0.8:
+        end = start + 0.8
+    return {"seg": i, "type": FX, "template": name,
+            "start": round(start, 3), "end": round(end, 3),
+            "fields": out_fields,
+            "w": int(meta.get("w") or 1000), "h": int(meta.get("h") or 520),
+            "y": int(meta.get("y") or 200), "dur": dur,
+            "source": text[:40]}
 
 
 def _verify(v: dict, segments: List[dict]) -> Optional[dict]:
@@ -187,11 +263,16 @@ def pick(segments: List[dict], llm: Provider,
     # 只是少了圖。呼叫端負責告訴使用者為什麼少。
     from ..rules import RulepackError
     try:
-        prompt = _rules.load().prompt("visuals", count=len(segments),
-                                      numbered=numbered, max_n=max_n,
-                                      types="、".join(SUPPORTED))
+        prompt = _rules.load().prompt(
+            "visuals", count=len(segments), numbered=numbered, max_n=max_n,
+            types="、".join(SUPPORTED),
+            # 沒有瀏覽器時目錄是空的，判斷腦就不會挑 fx——自動降級成 ASS 圖表
+            fx_catalog=_webfx.catalog() if tpls else "（這台機器上不能用）")
     except RulepackError:
         return []
+    from . import webfx as _webfx
+    tpls = _webfx.templates() if _webfx.available() else {}
+
     say(52, "判斷腦挑要配圖的句子…")
     try:
         data = llm.complete_json(prompt, tier=FAST)
@@ -202,7 +283,9 @@ def pick(segments: List[dict], llm: Provider,
     for v in (data.get("visuals") or []):
         if not isinstance(v, dict):
             continue
-        spec = _verify(v, segments)
+        spec = (_verify_fx(v, segments, tpls)
+                if str(v.get("type", "")).strip() == FX
+                else _verify(v, segments))
         if not spec or spec["seg"] in used:
             continue
         used.add(spec["seg"])

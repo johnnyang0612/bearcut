@@ -6,6 +6,6 @@
 「BearCut」與相關標識為川輝科技有限公司之商標，不隨本程式碼授權釋出，見 TRADEMARK.md。
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "川輝科技有限公司 (Brightstream Technology Co., Ltd.)"
 __license__ = "Apache-2.0"

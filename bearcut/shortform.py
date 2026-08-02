@@ -13,6 +13,7 @@
 """
 
 import os
+import pathlib
 from typing import Callable, List, Optional
 
 from . import media
@@ -125,7 +126,10 @@ def make(video: str, srt: Optional[str] = None,
     except Exception:
         pass
 
-    _vert.build_ass(subs, out["ass"], title=title, cta=cta, visuals=visual_list,
+    # fx（HTML 模板）不進 ASS——它是獨立的透明圖層，燒完字幕之後才疊上去
+    fx_list = [v for v in visual_list if v.get("type") == "fx"]
+    ass_visuals = [v for v in visual_list if v.get("type") != "fx"]
+    _vert.build_ass(subs, out["ass"], title=title, cta=cta, visuals=ass_visuals,
                     card_list=card_list, long_form=long_form)
     _vert.render(src, out["ass"], out["video"], FONTS, logo=logo,
                  progress_cb=progress_cb)
@@ -139,6 +143,45 @@ def make(video: str, srt: Optional[str] = None,
             report(99, f"封面已產出：{os.path.basename(c)}")
         else:
             out.pop("cover", None)
+
+    # ── fx 疊圖：一個一個疊上去 ─────────────────────────────
+    # 失敗不該讓整支短影音沒有產出——已經燒好字幕字卡的片還在，只是少了動畫。
+    if fx_list:
+        from .visual import webfx as _webfx
+        import tempfile as _tf
+        from .rules import RULEPACK_DIR as _RP
+        tpls = _webfx.templates()
+        cur = out["video"]
+        done = 0
+        for i, fx in enumerate(fx_list, 1):
+            tpl = tpls.get(fx["template"])
+            if not tpl:
+                continue
+            try:
+                with _tf.TemporaryDirectory(prefix="bearcut-fx-") as td:
+                    frames = _webfx.render_frames(
+                        pathlib.Path(tpl["html"]).read_text(encoding="utf-8"),
+                        td, data=fx["fields"], w=fx["w"], h=fx["h"],
+                        dur=fx["dur"], progress_cb=None)
+                    if not frames:
+                        continue
+                    nxt = cur.replace(".mp4", f"_fx{i}.mp4")
+                    _webfx.overlay(cur, td, nxt, at=fx["start"], y=str(fx["y"]))
+                    if cur != out["video"]:
+                        try:
+                            os.remove(cur)
+                        except OSError:
+                            pass
+                    cur = nxt
+                    done += 1
+            except Exception as e:
+                report(92, f"動畫 {i} 疊圖略過（{e}）")
+        if done and cur != out["video"]:
+            try:
+                os.replace(cur, out["video"])
+            except OSError:
+                out["video"] = cur
+        report(95, f"疊上 {done} 個精緻動畫")
 
     out["cards"] = card_list
     out["visuals"] = visual_list
