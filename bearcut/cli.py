@@ -159,7 +159,8 @@ def cmd_update(args) -> int:
         _emit(info, args.json, human + "\n  用 bearcut update 安裝。")
         return 0
 
-    print(human)
+    if not args.json:
+        print(human)
     res = _up.install_from(info["url"], expect_sha=info.get("sha256"),
                            token=args.token, progress_cb=prog)
     _emit({**info, **res}, args.json,
@@ -254,8 +255,9 @@ def cmd_upgrade(args) -> int:
         _emit(info, args.json, human + "\n  用 bearcut upgrade 安裝。\n")
         return 0
 
-    print(human)
-    print("  你的模型與設定不會被動到，剪好的影片也不會。\n")
+    if not args.json:
+        print(human)
+        print("  你的模型與設定不會被動到，剪好的影片也不會。\n")
     res = _su.apply(info["url"], expect_sha=info.get("sha256"), progress_cb=prog)
     _emit({**info, **res}, args.json,
           (f"\n  已更新到 {res['version']}（原本 {res.get('previous')}）\n"
