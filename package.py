@@ -63,6 +63,25 @@ def normalize(data: bytes, suffix: str) -> bytes:
     return lf.replace(b"\n", b"\r\n") if suffix in CRLF_EXT else lf
 
 
+# 固定時間戳，讓打包**可重現**：同樣的檔案內容永遠產出同一個 SHA-256。
+#
+# 為什麼要在意：發版流程是「打包 → 算 SHA → 寫進 release notes → 上傳」。
+# 若 ZIP 內嵌打包當下的時間，同樣的內容每打一次雜湊就變一次，於是
+#   · SHA 不再能回答「內容有沒有變」——它只回答「有沒有重打包」
+#   · 任何一次重打包都會讓已公布的雜湊作廢，即使一個字都沒改
+# 這正是雜湊要防的事情的反面。1980-01-01 是 ZIP 格式的紀元起點，
+# 也是可重現建置的慣用值。
+ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def entry(name: str) -> zipfile.ZipInfo:
+    """建一個時間戳與權限都固定的 ZIP 條目。"""
+    zi = zipfile.ZipInfo(name, date_time=ZIP_EPOCH)
+    zi.compress_type = zipfile.ZIP_DEFLATED
+    zi.external_attr = 0o644 << 16      # 一般檔案，跨平台一致
+    return zi
+
+
 def collect(root: Path):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -109,7 +128,7 @@ def pack_rulepack() -> int:
                 if fn in SKIP_FILES or Path(fn).suffix.lower() in SKIP_EXT:
                     continue
                 p = Path(dirpath) / fn
-                z.writestr(str(p.relative_to(src)).replace("\\", "/"), p.read_bytes())
+                z.writestr(entry(str(p.relative_to(src)).replace("\\", "/")), p.read_bytes())
                 n += 1
 
     # 雜湊要跟著 release notes 一起發：使用者端會拿它比對，對不上就整包丟掉
@@ -137,7 +156,7 @@ def main() -> int:
             total += len(data)
             data = normalize(data, src.suffix.lower())
             # 解壓後是一個 BearCut/ 資料夾，不會把檔案灑滿使用者的下載目錄
-            z.writestr(str(Path("BearCut") / rel).replace("\\", "/"), data)
+            z.writestr(entry(str(Path("BearCut") / rel).replace("\\", "/")), data)
             n += 1
 
     size_mb = out.stat().st_size / 1048576

@@ -31,6 +31,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import urllib.error
@@ -82,6 +83,31 @@ def _asset_sha256(asset: dict) -> Optional[str]:
     return None
 
 
+def _pack_hint(asset: dict, data: dict) -> Optional[str]:
+    """這個 feed 給的是哪一個包（不是哪一版）。
+
+    feed 若直接宣告 `pack` 就用它；沒有的話從資產檔名推：
+    `rulepack-pro-0.1.0.zip` → `bearcut-pro`、`rulepack-0.1.0.zip` → `bearcut-base`。
+
+    檔名推斷是權宜之計——`check()` 不下載就看不到包裡的 `name`，
+    而「要不要下載」正是它要回答的問題。推錯的後果只是多問一次要不要更新，
+    比「訂閱者永遠收不到包」輕得多。
+    """
+    declared = (data.get("pack") or asset.get("pack") or "").strip()
+    if declared:
+        return declared
+
+    name = (asset.get("name") or "").strip()
+    if not (name.startswith("rulepack") and name.endswith(".zip")):
+        return None
+    stem = name[:-4][len("rulepack"):].lstrip("-")
+    parts = [p for p in stem.split("-") if p]
+    if parts and re.match(r"^\d", parts[-1]):      # 去掉尾巴的版號
+        parts = parts[:-1]
+    suffix = "-".join(parts)
+    return f"bearcut-{suffix}" if suffix else "bearcut-base"
+
+
 def current() -> dict:
     """目前安裝的規則包資訊。"""
     p = RULEPACK_DIR / "rulepack.json"
@@ -124,12 +150,26 @@ def check(feed: Optional[str] = None, token: Optional[str] = None) -> dict:
     try:
         data = _fetch_json(feed, token)
     except urllib.error.HTTPError as e:
-        # 404 的意思是「這個來源還沒發布任何版本」（或 repo 尚未公開），
-        # 不是故障、更不是使用者的網路有問題。丟原始的 "HTTP Error 404" 給他，
-        # 他會去重開路由器——照實講清楚，並強調不影響剪片。
-        msg = ("更新來源上還沒有發布任何規則包，你目前用的是隨程式附的版本。"
-               "這不影響剪片。" if e.code == 404 else
-               f"更新來源回應 HTTP {e.code}，稍後再試。")
+        # 每一種狀態碼要給不同的下一步。全部回「稍後再試」是錯的指引：
+        # 授權碼打錯或訂閱到期，等再久都不會自己好，客戶會一直重按然後來問。
+        if e.code == 404:
+            # 「這個來源還沒發布任何版本」，不是故障、更不是使用者的網路有問題。
+            # 丟原始的 "HTTP Error 404" 給他，他會去重開路由器。
+            msg = ("更新來源上還沒有發布任何規則包，你目前用的是隨程式附的版本。"
+                   "這不影響剪片。")
+        elif e.code == 401:
+            msg = ("授權碼無效或沒有帶上。請確認訂閱信裡的授權碼有完整複製，"
+                   "再執行一次 bearcut login <授權碼>。\n"
+                   "沒有訂閱也可以照常剪片，用的是隨程式附的規則包。")
+        elif e.code == 403:
+            msg = ("這組授權碼已經到期或被停用，所以拿不到新的規則包。\n"
+                   "續訂之後就會恢復。你目前這份規則包仍然可以繼續用，剪片不受影響。")
+        elif e.code == 503:
+            msg = "更新來源說這個月的規則包還沒發布，稍後再試。這不影響剪片。"
+        elif 500 <= e.code < 600:
+            msg = f"更新來源伺服器出問題（HTTP {e.code}），稍後再試。這不影響剪片。"
+        else:
+            msg = f"更新來源回應 HTTP {e.code}，稍後再試。"
         return {"available": False, "current": cur.get("version"),
                 "latest": None, "error": msg}
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
@@ -148,10 +188,20 @@ def check(feed: Optional[str] = None, token: Optional[str] = None) -> dict:
 
     latest = (data.get("tag_name") or "").lstrip("v")
     newer = _ver_tuple(latest) > _ver_tuple(cur.get("version") or "0")
+
+    # 版號一樣不代表沒東西可拿：進階包與免費底包是**不同的包**，
+    # 兩邊都叫 0.1.0 是常態。只比版號的話，訂閱者按更新會被告知
+    # 「已是最新版」，永遠拿不到他付錢買的東西。
+    hint = _pack_hint(asset, data)
+    installed = (cur.get("name") or "").strip()
+    different = bool(hint and installed and hint != installed)
+
     return {
-        "available": newer,
+        "available": newer or different,
         "current": cur.get("version"),
+        "current_pack": installed or None,
         "latest": latest,
+        "pack": hint,
         "url": asset.get("browser_download_url"),
         "size": asset.get("size"),
         "notes": (data.get("body") or "")[:800],
@@ -192,6 +242,54 @@ def _verify_pack(d: Path) -> dict:
             f"這個規則包只支援到 BearCut {hi}，你目前是 {__version__}。\n"
             "請取得較新的規則包。")
     return meta
+
+
+def _merge_into(src: Path, dst: Path) -> None:
+    """把 src 疊到 dst 上：同名檔覆蓋，dst 原有而 src 沒有的檔案**留著**。
+
+    ## 為什麼不能整包取代
+
+    規則包分層：免費底包帶 `thresholds.json` 與 `prompts/`（引擎的地基），
+    進階包只帶自己新增的內容（hook 型錄、字卡特效、校字判準）。
+    以前這裡是 `rmtree` 之後 `copytree`——進階包一裝上去就把地基刪了，
+    校字、判重複、大字卡全部拋 RulepackError，三種模式從 UI 消失。
+    **客戶付了錢，換來一個壞掉的 BearCut。**
+
+    疊加之後底包留著，進階包蓋掉它要蓋的部分，兩層都在。
+
+    代價：若某一版底包想「移除」某個檔案，疊加會讓舊檔留下來。
+    那是一個沒人讀的檔案，跟「把地基刪掉」比起來是可以接受的取捨。
+    """
+    dst.mkdir(parents=True, exist_ok=True)
+    for s in src.rglob("*"):
+        rel = s.relative_to(src)
+        d = dst / rel
+        if s.is_dir():
+            d.mkdir(parents=True, exist_ok=True)
+        else:
+            d.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(s, d)
+
+
+def _install_health(d: Path) -> Optional[str]:
+    """裝完之後引擎還跑得動嗎？回問題描述，沒問題回 None。
+
+    只檢查「少了就不能剪片」的東西。這一層存在的理由是 A-7 的教訓：
+    當時測到「檔案有複製過去、rulepack.json 的版號有變」就當作通過，
+    但那個包其實會讓引擎整個不能用——**驗證要驗結果可用，不是驗動作完成**。
+    """
+    if not (d / "rulepack.json").exists():
+        return "缺 rulepack.json"
+    if not (d / "thresholds.json").exists():
+        return "缺 thresholds.json，所有偵測門檻會失效"
+    prompts = d / "prompts"
+    if not prompts.is_dir() or not any(prompts.glob("*.md")):
+        return "缺 prompts/，校字與判斷會整層失效"
+    try:
+        json.loads((d / "thresholds.json").read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return f"thresholds.json 讀不開（{e}）"
+    return None
 
 
 def install_from(url: str, expect_sha: Optional[str] = None,
@@ -266,12 +364,31 @@ def install_from(url: str, expect_sha: Optional[str] = None,
         backup = _backup()
 
         say(85, "安裝…")
-        if RULEPACK_DIR.exists():
+        _merge_into(root, RULEPACK_DIR)
+
+        # 裝完要確認引擎還跑得動，不是確認檔案有複製過去。
+        # 進階包只帶自己新增的東西（hook 型錄、字卡特效），不帶 thresholds 與 prompts；
+        # 疊加安裝已經保住了底包，但萬一包本身有問題，寧可退回去也不能讓客戶
+        # 拿到一個裝好卻不能剪片的 BearCut。
+        broken = _install_health(RULEPACK_DIR)
+        if broken:
+            say(95, "安裝後檢查沒過，還原…")
             shutil.rmtree(RULEPACK_DIR, ignore_errors=True)
-        shutil.copytree(root, RULEPACK_DIR)
+            if backup:
+                shutil.copytree(backup, RULEPACK_DIR)
+                tail = "已經自動還原成原本的規則包，剪片不受影響。"
+            else:
+                # backup 是 None 只有一種情況：原本就沒有規則包目錄。
+                # 那就把剛裝的半套清掉，回到「原本沒有」——留著半套比沒有更糟。
+                tail = "已經清掉沒裝完的部分。請重新安裝 BearCut 取得完整的規則包。"
+            return {"ok": False,
+                    "error": f"這個規則包裝上去之後 BearCut 會不能用（{broken}）。\n"
+                             f"{tail}\n"
+                             "請把這個訊息回報給規則包的來源。"}
 
     say(100, f"已更新到規則包 {meta.get('version')}")
     return {"ok": True, "version": meta.get("version"),
+            "name": meta.get("name"),
             "backup": str(backup) if backup else None,
             "sha256": got, "verified": bool(want), "warning": warning,
             "error": None}
