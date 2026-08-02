@@ -38,7 +38,17 @@ def run(cmd: List[str], timeout: Optional[int] = None) -> subprocess.CompletedPr
 
 
 def ffmpeg(args: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:
-    return run([_binary("ffmpeg"), "-hide_banner", "-nostats"] + args, timeout)
+    """跑 ffmpeg。**一律帶 `-y`**。
+
+    為什麼放在這裡而不是各自寫：沒帶 `-y` 時 ffmpeg 遇到已存在的輸出檔會等
+    使用者確認，而我們沒有 tty，結果是**安靜地失敗**。BearCut 的輸出路徑是
+    從輸入檔名推出來的固定值（`_淨毛片.mp4`、`_封面.jpg`…），所以「重跑一次」
+    必然撞到已存在的檔——而重跑正是使用者最常做的事。
+
+    實際踩過：有些呼叫端記得帶、有些忘了，忘了的那幾支要等到有人重跑第二次
+    才會發現。集中在這裡就不會再漏。
+    """
+    return run([_binary("ffmpeg"), "-hide_banner", "-nostats", "-y"] + args, timeout)
 
 
 def ffprobe(args: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:

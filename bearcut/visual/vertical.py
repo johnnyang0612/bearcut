@@ -49,6 +49,7 @@ def build_ass(subs: List[dict], ass_path: str,
               title: Optional[str] = None,
               cta: Optional[str] = None,
               card_list: Optional[List[dict]] = None,
+              visuals: Optional[List[dict]] = None,
               long_form: bool = False,
               keywords: Optional[List[str]] = None) -> str:
     """產直式 ASS：底部字幕（關鍵詞上色）+ 頂部標題/字卡 + 結尾 CTA。"""
@@ -84,6 +85,12 @@ def build_ass(subs: List[dict], ass_path: str,
     # 大字卡
     if card_list:
         ev += _cards.events(card_list, W)
+
+    # 動態示意圖跟字卡掛在同一區（畫面上半部），所以同一句不會兩者都上——
+    # motion.pick() 已經把段號去重，這裡只負責把事件疊進去。
+    if visuals:
+        from . import motion as _motion
+        ev += _motion.events(visuals, W)
 
     # 結尾 CTA：影片下緣與字幕之間的空檔，不壓字幕
     if cta and subs:

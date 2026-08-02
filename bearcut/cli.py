@@ -83,11 +83,13 @@ def cmd_shortform(args) -> int:
 
     res = make(args.video, srt=args.srt, title=args.title, cta=args.cta,
                output_dir=args.out, use_cards=not args.no_cards,
+               use_visuals=not args.no_visuals,
                follow_speaker=args.follow, make_cover=not args.no_cover,
                progress_cb=prog)
     human = (f"\n  直式短片：{res['video']}"
              + (f"\n  封面　　：{res['cover']}" if res.get("cover") else "")
-             + f"\n  大字卡　：{len(res.get('cards') or [])} 張")
+             + f"\n  大字卡　：{len(res.get('cards') or [])} 張"
+             + f"\n  動態示意：{len(res.get('visuals') or [])} 個")
     _emit({"ok": True, **res}, args.json, human)
     return 0
 
@@ -354,6 +356,8 @@ def build_parser() -> argparse.ArgumentParser:
     sf.add_argument("--out", metavar="資料夾", help="輸出位置")
     sf.add_argument("--follow", action="store_true", help="追講者裁切（單人時才生效）")
     sf.add_argument("--no-cards", action="store_true", help="不做大字卡")
+    sf.add_argument("--no-visuals", action="store_true",
+                    help="不做動態示意圖（圖表、流程、計數器）")
     sf.add_argument("--no-cover", action="store_true", help="不做封面")
     sf.set_defaults(func=cmd_shortform)
 

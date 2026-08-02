@@ -45,7 +45,8 @@ def _srt_to_subs(srt_path: str) -> List[dict]:
 def make(video: str, srt: Optional[str] = None,
          title: Optional[str] = None, cta: Optional[str] = None,
          output_dir: Optional[str] = None,
-         use_cards: bool = True, follow_speaker: bool = False,
+         use_cards: bool = True, use_visuals: bool = True,
+         follow_speaker: bool = False,
          logo: Optional[str] = None, make_cover: bool = True,
          progress_cb: Optional[Callable] = None) -> dict:
     """把一支剪好的片做成直式短影音。回產出的路徑。"""
@@ -74,6 +75,7 @@ def make(video: str, srt: Optional[str] = None,
 
     # 大字卡
     card_list = []
+    visual_list = []
     if use_cards and subs:
         from .llm import get_llm
         llm = get_llm()
@@ -85,6 +87,18 @@ def make(video: str, srt: Optional[str] = None,
             except Exception:
                 dur = 60.0
             card_list = _cards.pick(segs, llm, dur, progress_cb=progress_cb)
+
+            # 動態示意圖：依語意配圖表。判準在規則包，數字必須追得回逐字稿。
+            # 失敗不該讓整支短影音做不出來——沒有圖就只是少了圖。
+            if use_visuals:
+                try:
+                    from .visual import motion as _motion
+                    visual_list = _motion.pick(segs, llm, progress_cb=progress_cb)
+                    # 同一句不要既上字卡又上圖，會打架
+                    taken = {v['seg'] for v in visual_list}
+                    card_list = [c for i, c in enumerate(card_list) if i not in taken]
+                except Exception as e:
+                    report(56, f'動態示意圖略過（{e}）')
 
     # 追講者（選用）：偵測不到或多人就自動退回不裁切
     src = video
@@ -108,7 +122,7 @@ def make(video: str, srt: Optional[str] = None,
     except Exception:
         pass
 
-    _vert.build_ass(subs, out["ass"], title=title, cta=cta,
+    _vert.build_ass(subs, out["ass"], title=title, cta=cta, visuals=visual_list,
                     card_list=card_list, long_form=long_form)
     _vert.render(src, out["ass"], out["video"], FONTS, logo=logo,
                  progress_cb=progress_cb)
@@ -124,4 +138,5 @@ def make(video: str, srt: Optional[str] = None,
             out.pop("cover", None)
 
     out["cards"] = card_list
+    out["visuals"] = visual_list
     return out
