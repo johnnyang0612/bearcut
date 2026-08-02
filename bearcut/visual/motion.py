@@ -158,6 +158,10 @@ def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
     meta = tpls[name]["meta"]
     spec_fields = meta.get("fields") or {}
     text = segments[i].get("text", "")
+    # 跟 _verify 同一個理由：一句話常被字幕切成兩段，對比卡的兩個數字
+    # 分屬前後段是常態。窗開到相鄰各一段，鐵則不變——仍然是他講過的數字。
+    w_lo, w_hi = max(0, i - 1), min(len(segments), i + 2)
+    window = "　".join(segments[j].get("text", "") for j in range(w_lo, w_hi))
     fields = v.get("fields") or {}
     if not isinstance(fields, dict):
         return None
@@ -172,7 +176,10 @@ def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
                 num = float(val)
             except (TypeError, ValueError):
                 continue
-            if decl.get("factual") and not _traceable(num, text):
+            # 模板的單位是獨立的文字欄位（big + unit、leftValue + leftUnit），
+            # 由宣告檔的 unitField 指過去——「1000」配「萬」要對得上「破千萬」。
+            unit = str(fields.get(decl.get("unitField") or "", "") or "")
+            if decl.get("factual") and not _traceable(num, window, unit):
                 return None          # 畫面上會被當事實的數字，對不上就整條丟掉
             lo, hi = decl.get("min"), decl.get("max")
             if lo is not None:
@@ -325,12 +332,21 @@ def pick(segments: List[dict], llm: Provider,
     except LLMUnavailable:
         return []
 
-    out, used = [], set()
+    out, used, downgraded = [], set(), 0
     for v in (data.get("visuals") or []):
         if not isinstance(v, dict):
             continue
-        spec = (_verify_fx(v, segments, tpls)
-                if str(v.get("type", "")).strip() == FX
+        is_fx = str(v.get("type", "")).strip() == FX
+        # 有模板可用時，ASS 陽春圖表一律不採用。
+        #
+        # ASS 那套（純色矩形、描邊字）是「這台機器沒有瀏覽器」的降級路線，
+        # 不是拿來當成品的。實測把它燒進成片，觀感比不放還差——熊董的原話是
+        # 「特效變得意義不明，這樣不如乾脆不用」。所以寧可少配幾個圖，
+        # 也不要用陽春圖表充數。判斷腦沒挑到合適模板，就是這句不該配圖。
+        if tpls and not is_fx:
+            downgraded += 1
+            continue
+        spec = (_verify_fx(v, segments, tpls) if is_fx
                 else _verify(v, segments))
         if not spec or spec["seg"] in used:
             continue
@@ -338,6 +354,8 @@ def pick(segments: List[dict], llm: Provider,
         out.append(spec)
         if len(out) >= max_n:
             break
+    if downgraded:
+        say(55, f"略過 {downgraded} 個只能用陽春圖表呈現的（寧可不配，也不要降低質感）")
     say(56, f"配了 {len(out)} 個動態示意圖")
     return out
 
