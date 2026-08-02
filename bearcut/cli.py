@@ -167,6 +167,30 @@ def cmd_update(args) -> int:
     return 0 if res["ok"] else 1
 
 
+def cmd_longform(args) -> int:
+    """長片：一個資料夾裡的多段影片，各自順剪再接成一支。"""
+    from . import longform as _lf
+
+    def prog(p, m):
+        if not args.json:
+            print(f"  [{int(p):3d}%] {m}", flush=True)
+
+    try:
+        res = _lf.process_folder(args.folder, output_dir=args.out,
+                                 output_name=args.name, profile=args.mode,
+                                 force=args.force, progress_cb=prog)
+    except (RuntimeError, NotADirectoryError) as e:
+        _emit({"ok": False, "error": str(e)}, args.json, f"\n  {e}\n")
+        return 1
+
+    human = (f"\n  {len(res['parts'])} 段接成一支\n"
+             f"  完整淨毛片：{res['output']}\n"
+             + (f"  完整字幕：{res['srt']}\n" if res.get("srt") else
+                "  （各段有自己的字幕，但合併時間軸沒成功）\n"))
+    _emit({"ok": True, **res}, args.json, human)
+    return 0
+
+
 def cmd_login(args) -> int:
     """存 Pro 授權碼。存在使用者設定目錄，不在程式資料夾裡。"""
     from . import auth
@@ -274,6 +298,15 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--token", help="授權碼（進階規則包用）")
     up.set_defaults(func=cmd_update)
 
+    lf = sub.add_parser("longform", help="長片：一個資料夾的多段影片，順剪後接成一支")
+    lf.add_argument("folder", help="放著各段影片的資料夾")
+    lf.add_argument("--out", metavar="資料夾", help="輸出位置（預設寫回原資料夾）")
+    lf.add_argument("--name", help="成品檔名（預設用資料夾名）")
+    lf.add_argument("--mode", choices=["fast", "balanced", "precise"],
+                    help="效率／平衡／精準（預設 balanced）")
+    lf.add_argument("--force", action="store_true", help="已剪過的段落也重剪")
+    lf.set_defaults(func=cmd_longform)
+
     li = sub.add_parser("login", help="貼上 Pro 授權碼（存一次就記住）")
     li.add_argument("token", help="授權碼（信件裡那一串）")
     li.add_argument("--feed", help="自訂更新來源（不給就沿用原本設定）")
@@ -290,7 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
     v = sub.add_parser("version", help="顯示版本")
     v.set_defaults(func=cmd_version)
 
-    for sp in (d, s, c, sf, q, up, li, lo, u, v):
+    for sp in (d, s, c, sf, q, up, lf, li, lo, u, v):
         sp.add_argument("--json", action="store_true", help="輸出 JSON（給程式/AI Agent 解析）")
     return p
 

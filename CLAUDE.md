@@ -18,6 +18,7 @@ python cli.py cut <影片>           # 順剪：辨識 → 偵測 → 剪
 python cli.py cut <影片> --mode fast|balanced|precise
 python cli.py cut <影片> --plan-only    # 只產清單給人複核
 python cli.py cut --apply <清單.json>   # 吃複核過的清單只剪片
+python cli.py longform <資料夾>         # 長片：多段各自順剪再接成一支
 ```
 
 全部指令支援 `--json`（給程式與 AI Agent 解析）。
@@ -38,6 +39,7 @@ bearcut/
   detect/     silence・gaps・restarts・redundant・fragments・safety
   llm/        判斷腦：本機 CLI（claude/codex）+ API（Anthropic/OpenAI/Gemini/相容）
   correct.py  校字（必須在判斷之前）
+  longform.py 長片：多段各自順剪再接（不整支丟進 pipeline，理由見檔頭）
   plan.py     合併刀 → 保留區間 → 對照表
   cut.py      ffmpeg 剪接
   subtitle.py V1 + SRT（時間軸對齊剪完之後）
