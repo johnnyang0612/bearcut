@@ -47,6 +47,10 @@ from .rules import RULEPACK_DIR, RulepackError, _ver_tuple
 BACKUP_DIR = ROOT / ".rulepack_backup"
 DEFAULT_FEED = "https://api.github.com/repos/johnnyang0612/bearcut/releases/latest"
 
+# 有授權碼的人要去的地方。這不是秘密——它是個要驗授權碼才給東西的公開端點，
+# 寫在這裡是為了讓客戶**不必手動貼網址**：他買的是規則包，不是一份設定教學。
+PRO_FEED = "https://www.brightstream.com.tw/api/bearcut/feed"
+
 _UA = {"User-Agent": "BearCut-update/0.1", "Accept": "application/vnd.github+json"}
 
 
@@ -129,14 +133,25 @@ def _fetch_json(url: str, token: Optional[str] = None, timeout: int = 30) -> dic
         return json.loads(r.read().decode("utf-8"))
 
 
-def resolve_feed(feed: Optional[str] = None) -> str:
+def resolve_feed(feed: Optional[str] = None,
+                 token: Optional[str] = None) -> str:
     """決定要問哪個更新來源。
 
-    順序：指令參數 > 環境變數 > 登入時存下來的 > 免費的 GitHub Releases。
-    沒有授權碼的人永遠落在最後一項，這是免費版該有的樣子。
+    順序：指令參數 > 環境變數 > 登入時存下來的 > **有授權碼就走 Pro** > GitHub。
+
+    「有授權碼就走 Pro」這一段是必要的：客戶付完錢收到的信教他打
+    `bearcut login <授權碼>` 然後 `bearcut update`，如果這裡沒有這一層，
+    update 會去 GitHub 抓**免費包**——他付了錢、照指示做、什麼都沒拿到，
+    而且畫面還會顯示「已是最新版」，完全看不出哪裡不對。
+
+    不叫客戶自己貼 feed 網址，是因為他買的是規則包，不是一份設定教學。
+    自架 feed 的人仍可用 --feed 或環境變數蓋過去。
     """
-    return (feed or os.environ.get("BEARCUT_UPDATE_FEED")
-            or auth.load_feed() or DEFAULT_FEED)
+    explicit = (feed or os.environ.get("BEARCUT_UPDATE_FEED")
+                or auth.load_feed())
+    if explicit:
+        return explicit
+    return PRO_FEED if (token or auth.load_token()) else DEFAULT_FEED
 
 
 def check(feed: Optional[str] = None, token: Optional[str] = None) -> dict:
@@ -145,8 +160,8 @@ def check(feed: Optional[str] = None, token: Optional[str] = None) -> dict:
     `token` 不給就自動用 `bearcut login` 存下來的那組（或環境變數）。
     """
     cur = current()
-    feed = resolve_feed(feed)
     token = token or auth.load_token()
+    feed = resolve_feed(feed, token)
     try:
         data = _fetch_json(feed, token)
     except urllib.error.HTTPError as e:
