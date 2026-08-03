@@ -159,6 +159,39 @@ def _pretty(num: float) -> str:
     return f"{num:,.1f}"
 
 
+#: 模板欄位允許的標籤。只放行「標記重點」用的，不放行會載入外部東西的
+#: （img/script/iframe/style）——模板是規則包裡的資料，但欄位值是判斷腦生的，
+#: 兩者的信任等級不同。
+_SAFE_TAG = re.compile(
+    r"</?(?:span|b|strong|em|i|br)(?:\s+class=\"[\w\- ]{0,40}\")?\s*/?>",
+    re.I)
+
+
+def _safe_text(s: str, max_len: int) -> str:
+    """截字並清掉不允許的標籤。
+
+    長度只算**看得見的字**——大字報的重點詞要用 <span> 包起來，
+    把標籤算進長度的話一包就超標被砍掉半個標籤，畫面直接壞掉。
+    """
+    kept = []
+    visible = 0
+    i = 0
+    while i < len(s) and visible < max_len:
+        m = _SAFE_TAG.match(s, i)
+        if m:
+            kept.append(m.group(0))
+            i = m.end()
+            continue
+        if s[i] == "<":                     # 不在白名單的標籤，整個丟掉
+            j = s.find(">", i)
+            i = len(s) if j < 0 else j + 1
+            continue
+        kept.append(s[i])
+        visible += 1
+        i += 1
+    return "".join(kept)
+
+
 def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
     """驗一條 fx（HTML 模板）視覺。
 
@@ -220,7 +253,14 @@ def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
             nums[key] = num              # 衍生欄位要算數，不能拿千分位字串去 float()
             out_fields[key] = _pretty(num)
         else:
-            out_fields[key] = str(val).strip()[: int(decl.get("max") or 40)]
+            txt = _safe_text(str(val).strip(), int(decl.get("max") or 40))
+            # 宣告檔可以限定合法值（例如 kind 只能是 doc/chat/video/…）。
+            # 判斷腦很容易把「doc」寫成「文件」，填錯就用預設，
+            # 不要原樣傳給模板——那會讓整面縮圖退回同一種樣式。
+            allowed = decl.get("oneOf")
+            if allowed and txt not in allowed:
+                txt = str(decl.get("default") or allowed[0])
+            out_fields[key] = txt
 
     if not out_fields:
         return None

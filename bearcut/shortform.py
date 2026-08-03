@@ -12,6 +12,7 @@
 （換標題、換字卡、調顏色）。分開就不必為了改一個字卡重跑整個辨識。
 """
 
+import json
 import os
 import pathlib
 from typing import Callable, List, Optional
@@ -137,10 +138,28 @@ def make(video: str, srt: Optional[str] = None,
     # fx（HTML 模板）不進 ASS——它是獨立的透明圖層，燒完字幕之後才疊上去
     fx_list = [v for v in visual_list if v.get("type") == "fx"]
     ass_visuals = [v for v in visual_list if v.get("type") != "fx"]
+    # 頭頂在哪——決定卡片能放多大、放不放得下。先算，因為算圖時就要用。
+    # 臉框的座標在「640 寬的取樣幀」空間（見 speaker.crop_box 的 scale），
+    # 不是原片座標；直接除原片高度會算出偏高的位置。
+    head_top = None
+    if fx_list:
+        try:
+            faces = _speaker.detect_faces(video)
+            if faces:
+                from .visual.reframe import probe_size
+                sw, sh = probe_size(video)
+                k = (_vert.H / (640.0 * sh / sw)) if sw and sh else 1.0
+                tops = sorted(f["y"] * k for f in faces)
+                head_top = max(140.0, tops[len(tops) // 2] - 40)
+                report(93, f"頭頂約在 y={head_top:.0f}"
+                           f"（畫面 {head_top/_vert.H:.0%}），卡片放它上面")
+        except Exception:
+            pass
+
     # ⚠️ 順序：**先組好圖層再產字幕**。
-    # 字幕與字卡要知道哪幾秒會換成舞台版面，而「是不是舞台版位」寫在模板的
-    # meta 裡，是組圖層時才附上去的。反過來做的話 build_ass 拿到的是還沒有
-    # meta 的清單，舞台區間永遠算成空的——字卡會壓在動畫上、字幕會被小窗蓋住。
+    # 字幕與字卡要知道哪幾秒是整頁切走，而那件事寫在模板的 meta 裡，
+    # 是組圖層時才附上去的。反過來做的話 build_ass 拿到的是還沒有 meta 的
+    # 清單，區間永遠算成空的——字卡就會壓在動畫上。
     #
     # 動畫先算成 PNG 序列，跟字幕在同一次編碼裡插進去。
     # 分兩次做的話每次都是一輪有損轉檔，而且圖會蓋在字幕上。
@@ -159,57 +178,73 @@ def make(video: str, srt: Optional[str] = None,
                 fd = os.path.join(fx_dir, f"L{i}")
                 os.makedirs(fd, exist_ok=True)
                 meta = tpl.get("meta") or {}
-                # 舞台版位的圖要撐滿舞台，模板寫的是設計尺寸
                 from .visual import inserts as _ins0
-                z = (_ins0.stage_zoom(_vert.W, _vert.H, fx["w"], fx["h"])
-                     if meta.get("placement") == "stage" else 1.0)
+                # ── 版位的編輯邏輯 ────────────────────────────
+                # upper：卡片縮到剛好放在頭上方的空白，**人留在畫面上**。
+                #        一個數字沒必要佔掉整個版面。
+                # full ：整頁切走，畫面只有素材、人不出現。要用讀的內容
+                #        （多項清單、前後對比）才值得把畫面整個讓出來。
+                # 沒有中間值——把人壓成一小條兩邊都不討好。
+                z, y = 1.0, None
+                if meta.get("placement") != "full":
+                    fit = _ins0.fit_above_head(_vert.W, _vert.H, fx["w"],
+                                               fx["h"], head_top,
+                                               meta.get("min_zoom"))
+                    if fit:
+                        z, y = fit
+                    else:
+                        # 頭上方放不下（或縮到看不清楚），就整頁切走——不要硬塞。
+                        # 密的模板寧可佔滿畫面，也不要縮成一團糊。
+                        meta = dict(meta, placement="full")
+                        report(93, f"動畫 {i}（{fx['template']}）"
+                                   f"頭上方放不下，改成整頁切走")
+                if meta.get("placement") == "full":
+                    z = _ins0.fit_full(_vert.W, _vert.H, fx["w"], fx["h"])
+                # 算滿整個顯示時間，讓退場動畫也被算進去。
+                # 只算進場那幾格再複製最後一格撐著的話，圖是突然消失的。
+                span = max(1.2, float(fx["end"]) - float(fx["start"]))
                 frames = _webfx.render_frames(
                     pathlib.Path(tpl["html"]).read_text(encoding="utf-8"),
                     fd, data=fx["fields"], w=fx["w"], h=fx["h"],
-                    dur=fx["dur"], zoom=z, progress_cb=None)
+                    dur=span, zoom=z, progress_cb=None)
                 if frames:
                     insert_layers.append({
                         "frames_pattern": os.path.join(fd, "f_%04d.png"),
                         "start": fx["start"], "end": fx["end"],
                         "w": int(round(fx["w"] * z)),
-                        "h": int(round(fx["h"] * z)), "meta": meta})
+                        "h": int(round(fx["h"] * z)), "y": y, "meta": meta})
             except Exception as e:
                 report(92, f"動畫 {i} 算圖略過（{e}）")
         if insert_layers:
             report(93, f"算好 {len(insert_layers)} 段動畫，準備插入畫面")
 
+    # 字幕標色：判斷腦逐句挑要亮的詞。免費版單色、Pro 分三種語氣色，
+    # 差別在規則包的判準，程式一樣。挑不到就退回內建的正規表示式。
+    colour_plan = {}
+    if subs:
+        from .llm import get_llm as _get_llm
+        from .visual import keywords as _kwmod
+        try:
+            _l = _get_llm()
+            if _l.available():
+                colour_plan = _kwmod.pick(subs, _l, progress_cb=progress_cb)
+        except Exception as e:
+            report(58, f"字幕標色略過（{e}），改用內建關鍵詞規則")
+    if colour_plan:
+        # 存成人工可改的檔——想換哪個詞亮、換什麼色，改這個檔重跑就好
+        _p = os.path.join(d, f"{base}_字幕標色.json")
+        with open(_p, "w", encoding="utf-8") as f:
+            json.dump({str(k): v for k, v in sorted(colour_plan.items())},
+                      f, ensure_ascii=False, indent=1)
+        out["colour_plan"] = _p
+
     _vert.build_ass(subs, out["ass"], title=title, cta=cta, visuals=ass_visuals,
                     stage_fx=insert_layers, card_list=card_list,
-                    long_form=long_form)
-
-    # 舞台版位要把人像縮進下方小窗——窗是寬扁的，隨便取一條會切掉額頭或下巴，
-    # 所以用臉部偵測抓實際的高度。偵測不到就用經驗值，不會失敗。
-    face_center = None
-    if insert_layers:
-        from .visual import inserts as _ins
-        if _ins.stage_spans(insert_layers):
-            if fx_dir:
-                _ins.stage_assets(_vert.W, _vert.H, fx_dir)
-            try:
-                faces = _speaker.detect_faces(src)
-                if faces:
-                    from .visual.reframe import probe_size
-                    sw, sh = probe_size(src)
-                    # ⚠️ 臉框的座標在「640 寬的取樣幀」空間裡（見 speaker.crop_box
-                    # 的 scale = src_w / 640），不是原片座標。直接除原片高度會
-                    # 算出偏高的位置，小窗就裁到牆壁而不是臉。
-                    sample_h = 640.0 * sh / sw if sw else sh
-                    ys = sorted(f["y"] + f["h"] / 2 for f in faces)
-                    face_center = ys[len(ys) // 2] / sample_h
-                    face_center = min(0.85, max(0.15, face_center))
-                    report(93, f"人臉在畫面 {face_center:.0%} 高度，小窗照這個裁")
-            except Exception:
-                pass
+                    long_form=long_form, colour_plan=colour_plan)
 
     try:
         _vert.render(src, out["ass"], out["video"], FONTS, logo=logo,
                      insert_layers=insert_layers or None,
-                     face_center=face_center, assets_dir=fx_dir,
                      progress_cb=progress_cb)
     finally:
         if fx_dir:

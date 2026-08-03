@@ -38,17 +38,29 @@ MAX_LEN_DRIFT = 0.30      # 單段長度差超過此比例就不採用（見上�
 
 
 def load_replacements() -> Tuple[dict, list]:
-    """讀替換表與詞彙表。回 `(replacements, hotwords)`。"""
+    """讀替換表與詞彙表。回 `(replacements, hotwords)`。
+
+    兩個來源合併：規則包（通用）＋ 使用者的校正記憶（`bearcut learn` 學來的）。
+    使用者的優先——他親手修過的東西，比通用規則更知道自己在講什麼。
+    """
+    repl, hot = {}, []
     p = RULEPACK_DIR / "replacements.json"
-    if not p.exists():
-        return {}, []
+    if p.exists():
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            repl = {k: v for k, v in (d.get("replacements") or {}).items()
+                    if not k.startswith("$")}
+            hot = list(d.get("hotwords") or [])
+        except json.JSONDecodeError:
+            pass
     try:
-        d = json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}, []
-    repl = {k: v for k, v in (d.get("replacements") or {}).items()
-            if not k.startswith("$")}
-    return repl, list(d.get("hotwords") or [])
+        from .learn import load as _load_memory
+        u_repl, u_hot = _load_memory()
+        repl.update(u_repl)                       # 使用者的蓋過規則包的
+        hot += [w for w in u_hot if w not in hot]
+    except Exception:
+        pass                                      # 沒有記憶檔不該讓校字失敗
+    return repl, hot
 
 
 def apply_replacements(segments: List[dict], repl: dict,

@@ -99,24 +99,50 @@ def describe() -> str:
 
 # ── 把模板包成「一長條 N 格」的頁面 ──────────────────────────────
 
+#: 一張長條圖的最大高度。瀏覽器的截圖高度大約卡在 16384px，超過就整片空白
+#: 而且不報錯。留一點餘裕。
+MAX_STRIP_PX = 14000
+
 _STRIP = """<!doctype html><meta charset="utf-8">
 <style>
   html,body{{margin:0;padding:0;background:transparent}}
   .bc-strip{{display:block}}
-  .bc-cell{{width:{w}px;height:{h}px;overflow:hidden;position:relative}}
+  .bc-cell{{width:{w}px;height:{h}px;overflow:visible;position:relative}}
   /* zoom 而不是 transform:scale——zoom 會放大版面單位，所以圓角、陰影、
      字距全部等比長大，出來還是原生解析度不會糊。模板本身用設計尺寸寫，
      要多大由呼叫端決定。 */
-  .bc-cell > *{{zoom:{zoom}}}
+  .bc-life{{zoom:{zoom}}}
+
+  /* ── 生命週期：進場、停留、退場 ──────────────────────────
+     模板只寫進場的細節編排，整體的「來與走」統一在這裡做。
+
+     為什麼要有這一層：以前只算進場那幾格，之後複製最後一格撐著，時間到
+     直接切掉——圖是**突然消失**的，看起來很生硬。這裡讓每張圖都有收尾，
+     而且不用改任何一支模板。
+
+     退場比進場快（0.26s vs 0.34s）：東西要走得比來得果斷，
+     拖泥帶水的退場會讓節奏黏住。 */
+  .bc-life{{
+    animation: bc-life {total:.3f}s linear both;
+    transform-origin: 50% 30%;
+  }}
+  @keyframes bc-life {{
+    0%      {{ opacity:0; transform: translateY(34px) scale(.955); filter: blur(7px) }}
+    {in_a}% {{ opacity:1; transform: translateY(0)    scale(1);    filter: blur(0) }}
+    {out_a}%{{ opacity:1; transform: translateY(0)    scale(1);    filter: blur(0) }}
+    100%    {{ opacity:0; transform: translateY(-20px) scale(.985); filter: blur(5px) }}
+  }}
 </style>
 <div class="bc-strip">{cells}</div>
 <script>
   // 用 Web Animations API 把每一格的時間軸釘在不同位置再暫停。
   // 不覆寫 animation-delay：模板裡常有刻意錯開的延遲（第二根柱子晚一點長），
   // 覆寫會把那個錯落感洗掉。
-  const FPS = {fps}, N = {n};
+  // OFFSET：這一批是整段動畫的第幾格開始。分批算的時候不加這個，
+  // 每一批都會從頭播一次，成片上就是動畫重播好幾次。
+  const FPS = {fps}, N = {n}, OFFSET = {offset};
   document.querySelectorAll('.bc-cell').forEach((cell, i) => {{
-    const t = (i / FPS) * 1000;
+    const t = ((OFFSET + i) / FPS) * 1000;
     cell.getAnimations({{subtree: true}}).forEach(a => {{
       try {{ a.currentTime = t; a.pause(); }} catch (e) {{}}
     }});
@@ -159,37 +185,59 @@ def render_frames(template_html: str, out_dir: str, data: Optional[dict] = None,
     zoom = max(0.25, float(zoom or 1.0))
     w, h = int(round(w * zoom)), int(round(h * zoom))
     body = _fill(template_html, data or {})
-    cells = "".join(f'<div class="bc-cell">{body}</div>' for _ in range(n))
-    page = _STRIP.format(w=w, h=h, fps=fps, n=n, cells=cells, zoom=zoom)
+    # 進場 0.34 秒、退場 0.26 秒，其餘時間停著。換算成百分比給 keyframes。
+    in_a = min(45.0, 0.34 / max(dur, 0.6) * 100)
+    out_a = max(in_a + 5, 100 - 0.26 / max(dur, 0.6) * 100)
+
+    # ⚠️ 一張長條圖裝得下幾格是有上限的。瀏覽器的截圖高度大約卡在 16384px，
+    # 超過的部分**整片空白而且不會報錯**——實測 4.7 秒 ×24fps ×544px 高
+    # 需要 61,000px，於是第 30 格之後全空，成片上那張圖就消失了。
+    # 所以分批算，每批控制在安全高度以內。
+    per = max(1, min(n, MAX_STRIP_PX // max(1, h)))
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    from PIL import Image
+    done = 0
     with tempfile.TemporaryDirectory(prefix="bearcut-fx-") as td:
-        html = Path(td) / "strip.html"
-        html.write_text(page, encoding="utf-8")
-        strip = Path(td) / "strip.png"
+        for batch, base in enumerate(range(0, n, per)):
+            cnt = min(per, n - base)
+            cells = "".join(
+                f'<div class="bc-cell"><div class="bc-life">{body}</div></div>'
+                for _ in range(cnt))
+            page = _STRIP.format(w=w, h=h, fps=fps, n=cnt, cells=cells,
+                                 zoom=zoom, total=dur, offset=base,
+                                 in_a=f"{in_a:.1f}", out_a=f"{out_a:.1f}")
+            html = Path(td) / f"strip{batch}.html"
+            html.write_text(page, encoding="utf-8")
+            strip = Path(td) / f"strip{batch}.png"
 
-        say(10, f"渲染 {n} 格動畫…")
-        cmd = [browser, "--headless=new", "--disable-gpu", "--no-sandbox",
-               "--hide-scrollbars", "--force-device-scale-factor=1",
-               "--default-background-color=00000000",
-               f"--window-size={w},{h * n}",
-               # 給 CSS 動畫一點虛擬時間跑起來，腳本才有 animation 可以釘
-               "--virtual-time-budget=1500",
-               f"--screenshot={strip}", html.as_uri()]
-        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
-        if not strip.exists() or strip.stat().st_size < 1000:
-            tail = (r.stderr or b"").decode("utf-8", "ignore")[-300:]
-            raise WebFxUnavailable(f"瀏覽器沒有產出畫面。\n{tail}")
+            say(10 + int(80 * base / n), f"渲染第 {base+1}~{base+cnt} 格…")
+            r = subprocess.run(
+                [browser, "--headless=new", "--disable-gpu", "--no-sandbox",
+                 "--hide-scrollbars", "--force-device-scale-factor=1",
+                 "--default-background-color=00000000",
+                 f"--window-size={w},{h * cnt}",
+                 # 給 CSS 動畫一點虛擬時間跑起來，腳本才有 animation 可以釘
+                 "--virtual-time-budget=1500",
+                 f"--screenshot={strip}", html.as_uri()],
+                capture_output=True, timeout=timeout)
+            if not strip.exists() or strip.stat().st_size < 1000:
+                tail = (r.stderr or b"").decode("utf-8", "ignore")[-300:]
+                raise WebFxUnavailable(f"瀏覽器沒有產出畫面。\n{tail}")
 
-        say(60, "切成單格…")
-        # 用 PIL 切，不用 ffmpeg。
-        # ffmpeg 的 crop 只能用 `n`（幀號）當偏移量，而這裡的輸入是**一張** PNG，
-        # n 恆為 0——切出來會是 16 張一模一樣的圖。踩過才發現。
-        from PIL import Image
-        im = Image.open(strip).convert("RGBA")
-        for i in range(n):
-            im.crop((0, i * h, w, (i + 1) * h)).save(out / f"f_{i+1:04d}.png")
+            # 用 PIL 切，不用 ffmpeg。
+            # ffmpeg 的 crop 只能用 `n`（幀號）當偏移量，而這裡的輸入是**一張**
+            # PNG，n 恆為 0——切出來會是一模一樣的圖。踩過才發現。
+            im = Image.open(strip).convert("RGBA")
+            if im.height < h * cnt - 2:
+                raise WebFxUnavailable(
+                    f"瀏覽器只畫出 {im.height}px，需要 {h * cnt}px。"
+                    f"單格高度 {h}px 可能太大。")
+            for i in range(cnt):
+                im.crop((0, i * h, w, (i + 1) * h)).save(
+                    out / f"f_{base + i + 1:04d}.png")
+            done += cnt
 
     files = sorted(str(p) for p in out.glob("f_*.png"))
     say(100, f"{len(files)} 格完成")

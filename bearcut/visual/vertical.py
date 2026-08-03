@@ -52,33 +52,40 @@ def build_ass(subs: List[dict], ass_path: str,
               visuals: Optional[List[dict]] = None,
               stage_fx: Optional[List[dict]] = None,
               long_form: bool = False,
-              keywords: Optional[List[str]] = None) -> str:
+              keywords: Optional[List[str]] = None,
+              colour_plan: Optional[dict] = None) -> str:
     """產直式 ASS：底部字幕（關鍵詞上色）+ 頂部標題/字卡 + 結尾 CTA。"""
     lines = header(W, H, _sub_styles() + _cards.styles())
     ev: List[str] = []
     cx = W // 2
 
-    # 舞台版位的那幾秒，人像縮到下方小窗——字幕要跟著移到小窗上方，
-    # 不然字會壓在人臉上。同時間的大字卡直接不畫，會跟動畫疊成一團。
-    from . import inserts as _ins
-    _spans = _ins.stage_spans(stage_fx or [])
-    _stage_sub_y = _ins.stage_subtitle_y(H)
+    # 有動畫的那幾秒，同時間的大字卡不要畫。
+    #
+    # ⚠️ **所有**動畫都要算，不是只算整頁切走的。放在頭上方的動畫跟大字卡
+    # 佔的是同一塊（畫面上半部），兩層疊上去誰都看不清楚——熊董的原話是
+    # 「你上面有動畫的時候又蓋字卡，這樣怎麼看？」
+    _spans = sorted((float(v["start"]) - 0.2, float(v["end"]) + 0.2)
+                    for v in (stage_fx or []))
 
     def _on_stage(s0, s1):
         return any(s0 < e and s1 > b for b, e in _spans)
 
     # 字幕：每列最多 8 字（8×72px + 關鍵詞放大 118% 仍 < 700px 安全寬）
-    for s in subs:
+    for _i, s in enumerate(subs):
         text = clean_text(s.get("text", ""))
         if not text:
             continue
         rows = split_rows(text, max_len=TYPE["sub_max_len"])
-        body = "\\N".join(_kw.decorate(r, keywords, long_form=long_form)
-                          for r in rows[:2])
-        place = (f"\\an5\\pos({cx},{_stage_sub_y})"
-                 if _on_stage(s["start"], s["end"]) else "")
+        # 標色計畫是以「第幾句」為鍵，所以要用列舉的索引，不能用 list.index()
+        # ——同樣的句子出現兩次的話 index() 會一直回第一次的位置。
+        plan = (colour_plan or {}).get(_i)
+        body = "\\N".join(
+            _kw.decorate(r, keywords, long_form=long_form, plan=plan)
+            for r in rows[:2])
+        # 字幕不移位：整頁切走時字幕照樣壓在最上層，
+        # 剪輯師切 B-roll 的時候字幕也不會消失。
         ev.append(f"Dialogue: 0,{ts(s['start'])},{ts(s['end'])},Sub,,0,0,0,,"
-                  f"{{{place}\\fad({TYPE['fade_ms']},{TYPE['fade_ms']})}}{body}")
+                  f"{{\\fad({TYPE['fade_ms']},{TYPE['fade_ms']})}}{body}")
 
     # 開場標題：前 3.5 秒，讓中途滑進來的人知道這支在講什麼。
     #
@@ -102,8 +109,8 @@ def build_ass(subs: List[dict], ass_path: str,
             ev.append(f"Dialogue: 1,{ts(0)},{ts(title_end)},Title,,0,0,0,,"
                       f"{{\\pos({cx},{ANCHORS['title_y']})\\fad(200,200)}}{t}")
 
-    # 大字卡。舞台時間內的要拿掉——那幾秒上半部整塊是動畫的，
-    # 字卡疊上去會壓在卡片上。段號去重擋不掉這種「不同段但時間交疊」的情況。
+    # 大字卡。整頁切走的時間內要拿掉——段號去重擋不掉這種
+    # 「不同段但時間交疊」的情況。
     if card_list:
         ev += _cards.events(
             [c for c in card_list if not _on_stage(c["start"], c["end"])], W)

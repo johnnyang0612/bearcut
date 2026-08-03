@@ -33,6 +33,48 @@ def _p_upper(w, h, lw, lh):
     return "(W-w)/2", str(max(60, int(h * 0.16)))
 
 
+# 頭頂上方的空白區：卡片要放得下、又不能碰到頭
+TOP_MARGIN = 70
+HEAD_GAP = 46
+MIN_READABLE_ZOOM = 0.62   # 縮到比這還小就看不清楚了，那就別硬塞
+
+
+def fit_above_head(w: int, h: int, tpl_w: int, tpl_h: int,
+                   head_top: Optional[float] = None,
+                   min_zoom: Optional[float] = None
+                   ) -> Optional[Tuple[float, int]]:
+    """卡片能不能放在頭上方而不蓋到人。回 `(縮放, y)`，放不下回 None。
+
+    一個數字沒必要佔掉整個版面——熊董的原話是「沒必要占這麼多版面吧？
+    你把我的人直接丟到最下面變成超擠了」。所以先試「他維持全螢幕，
+    卡片放在頭上方的空白」，真的塞不下才整頁切走。
+
+    `min_zoom` 是這支模板的最小可用比例，**由模板自己宣告**。
+    每支能縮的程度差很多：主打數字縮到 0.6 還是很大，縮圖牆縮到 0.9
+    標籤就只剩十幾像素、完全看不清楚。用同一個門檻會讓密的模板變成一團糊。
+    """
+    if not tpl_w or not tpl_h:
+        return None
+    floor = MIN_READABLE_ZOOM if min_zoom is None else float(min_zoom)
+    limit = (h * 0.36 if head_top is None else head_top) - HEAD_GAP
+    avail = limit - TOP_MARGIN
+    if avail < 120:
+        return None
+    z = min(w * 0.94 / tpl_w, avail / tpl_h)
+    if z < floor:
+        return None            # 縮到看不清楚，不如整頁切走
+    z = min(z, 1.6)
+    y = int(TOP_MARGIN + (avail - tpl_h * z) / 2)
+    return z, max(TOP_MARGIN, y)
+
+
+def fit_full(w: int, h: int, tpl_w: int, tpl_h: int) -> float:
+    """整頁切走時模板要放多大。人不在畫面上，所以可以放得比較開。"""
+    if not tpl_w or not tpl_h:
+        return 1.0
+    return max(0.5, min(2.0, min(w * 0.90 / tpl_w, h * 0.62 / tpl_h)))
+
+
 def _p_lower_third(w, h, lw, lh):
     """下三分之一：新聞條的位置，字幕上方。"""
     return "(W-w)/2", str(max(60, int(h * 0.58)))
@@ -42,52 +84,22 @@ PLACEMENTS: Dict[str, Callable] = {
     "full": _p_full,
     "upper": _p_upper,
     "lower_third": _p_lower_third,
-    "stage": _p_full,       # 舞台版位的座標由 build() 另外算，見下方說明
 }
-
-# ── 舞台版位 ────────────────────────────────────────────────────
-# 跟其他版位不同：它會動到**底片本身**（人像縮進下方小窗），不只是疊一層。
-# 所以座標算在 build() 裡，這張表只登記名字。
-#
-# 比例逐格量自參考片（720×1280）：
-#   小窗上緣 0.719、滿寬左右各留 2.8%、字幕 0.641、背景近黑
-#
-# ⚠️ 兩個一定要做對，做錯就是熊董說的「把我切到下方，我人整個被蓋住」：
-#   1. **換版是硬切**，一格切完。參考片 x_010 還是全螢幕、x_011 就整個換版了，
-#      中間沒有過渡。淡入淡出會讓兩個版面糊在一起，看起來很髒。
-#   2. **裁切要對準臉**。窗是寬扁的，從直式原片隨便取一條會切掉額頭或下巴。
-#      有臉部偵測就用偵測到的位置，沒有才退回經驗值。
-STAGE_WIN_TOP = 0.719
-STAGE_SIDE_PAD = 0.028
-STAGE_SUB_Y = 0.641
-STAGE_BG = "0x06080A"
-STAGE_FACE_CENTER = 0.45        # 偵測不到臉時的退路
-STAGE_FILL_W = 0.94             # 圖要佔畫面寬度的比例
-
-
-def stage_zoom(w: int, h: int, tpl_w: int, tpl_h: int) -> float:
-    """模板要放大幾倍才會撐滿舞台。模板寫設計尺寸，實際大小由版位決定。
-
-    寬高兩邊都不能爆，取比較嚴的那個。用 CSS zoom 放大（不是事後拉伸），
-    所以圓角、陰影、字距等比長大，出來還是原生解析度。
-    """
-    if not tpl_w or not tpl_h:
-        return 1.0
-    stage_h = stage_subtitle_y(h) - 90        # 上方留邊 + 字幕上方留白
-    return max(0.5, min(2.5, min(w * STAGE_FILL_W / tpl_w, stage_h / tpl_h)))
-
 
 # ── 轉場 ────────────────────────────────────────────────────────
 # 每個回傳一段接在圖層後面的 filter 字串（不含前後的 [標籤]）。
 # s/e 是這張圖的進出時間，d 是轉場長度。
 
 def _t_cut(s, e, d, w, h):
-    """硬切。剪輯師最常用的一種，乾脆俐落。"""
+    """硬切。剪輯師最常用的一種，乾脆俐落。
+
+    參考片就是這樣：前一格還是人像，下一格已經整個換版，中間沒有過渡。
+    """
     return ""
 
 
 def _t_fade(s, e, d, w, h):
-    """淡入淡出。安全牌，接在說話中間不會打斷節奏。"""
+    """淡入淡出。接在說話中間不會打斷節奏。"""
     return (f"fade=t=in:st=0:d={d:.2f}:alpha=1,"
             f"fade=t=out:st={max(0.0, (e - s) - d):.2f}:d={d:.2f}:alpha=1")
 
@@ -111,9 +123,9 @@ _MOTION: Dict[str, Callable] = {
         x, f"({y})+(1-min(1,(t-{{t0}})/{d:.2f}))*90"),
 }
 
-DEFAULT_TRANSITION = "fade"
+DEFAULT_TRANSITION = "cut"
 DEFAULT_PLACEMENT = "upper"
-DEFAULT_TRANS_SEC = 0.32
+DEFAULT_TRANS_SEC = 0.28
 
 
 def plan(visual: dict, w: int, h: int) -> dict:
@@ -133,47 +145,17 @@ def plan(visual: dict, w: int, h: int) -> dict:
             "trans_sec": float(meta.get("trans_sec") or DEFAULT_TRANS_SEC)}
 
 
-def stage_assets(w: int, h: int, out_dir: str) -> bool:
-    """產人像小窗的圓角遮罩。回是否成功。
+FULL_BG = "0x06080A"
 
-    只剩遮罩——底圖改用 ffmpeg 的 color+drawgrid 直接生，不再需要外部檔案。
-    圓角遮罩沒有濾鏡等價物，所以還是畫一張；但它走 `movie` 濾鏡源讀進來，
-    不佔輸入編號、也不會變成無限長的流。
+
+def full_spans(layers: List[dict]) -> List[Tuple[float, float]]:
+    """哪幾段時間是「整頁切走」——畫面只有素材，人不出現。
+
+    相鄰的合併：兩張圖靠得很近時，中間不該閃回人像再切回去。
     """
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        return False
-    os.makedirs(out_dir, exist_ok=True)
-    _, _, ww, wh = stage_rect(w, h)
-    m = Image.new("L", (ww, wh), 0)
-    ImageDraw.Draw(m).rounded_rectangle([0, 0, ww - 1, wh - 1], radius=30,
-                                        fill=255)
-    m.convert("RGB").save(os.path.join(out_dir, "stage_mask.png"))
-    return True
-
-
-def stage_rect(w: int, h: int) -> Tuple[int, int, int, int]:
-    """舞台版位的人像小窗 (x, y, w, h)。"""
-    pad = int(round(w * STAGE_SIDE_PAD))
-    y = int(round(h * STAGE_WIN_TOP))
-    return pad, y, w - pad * 2, h - y
-
-
-def stage_subtitle_y(h: int) -> int:
-    """舞台版位時字幕該放的高度（小窗上方）。"""
-    return int(round(h * STAGE_SUB_Y))
-
-
-def stage_spans(layers: List[dict], pad: float = 0.0) -> List[Tuple[float, float]]:
-    """哪幾段時間要換成舞台版面。相鄰的合併，免得畫面閃回去又切回來。
-
-    `pad` 預設 0：**換版是硬切**，前後不留緩衝。留了就會在人還在講話的時候
-    先換版，看起來像卡了一下。
-    """
-    spans = sorted((max(0.0, float(v["start"]) - pad), float(v["end"]) + pad)
+    spans = sorted((float(v["start"]), float(v["end"]))
                    for v in layers
-                   if (v.get("meta") or {}).get("placement") == "stage")
+                   if (v.get("meta") or {}).get("placement") == "full")
     out: List[Tuple[float, float]] = []
     for s, e in spans:
         if out and s <= out[-1][1] + 0.4:
@@ -207,50 +189,23 @@ def build(layers: List[dict], w: int, h: int, base_label: str = "base",
     inputs: List[str] = []
     prev = base_label
 
-    # ⚠️ filter 裡的 `[n:v]` 一定要跟 `-i` 的實際順序對得起來。
-    # 之前底圖與遮罩用 `-i` 餵進來時算錯過編號，結果把不透明的網格底圖當成
-    # 一張動畫疊上去，畫面上四張圖全糊在一起、人整個不見，而 ffmpeg 回傳 0。
-    # 現在底圖與遮罩都改走濾鏡源（color / movie），不佔輸入編號，
-    # 所以圖層編號就是單純的遞增——這種錯不會再發生。
-    spans = stage_spans(layers)
-    layer0 = first_input
-
-    # ── 舞台版位：底片本身要換版 ────────────────────────────
-    if spans:
-        wx, wy, ww, wh = stage_rect(w, h)
-        fc = STAGE_FACE_CENTER if face_center is None else float(face_center)
-        # 小窗是寬扁的，原片是直式，所以裁一條橫幅出來，中心對準臉
-        crop_h = max(2, min(h, int(round(ww and w * wh / ww or wh))))
-        crop_y = max(0, min(h - crop_h, int(round(h * fc - crop_h / 2))))
-        bg_png = os.path.join(assets_dir, "stage_bg.png") if assets_dir else None
-        mask_png = os.path.join(assets_dir, "stage_mask.png") if assets_dir else None
-
-        # 底圖用 ffmpeg 內建的 color+drawgrid 生，**不要用 `-loop 1` 餵 PNG**。
-        # 靜態圖當輸入是無限長的流，overlay 的 shortest 收不住，ffmpeg 會一路
-        # 編下去——這個坑踩過兩次（42 分鐘 709MB、以及 1.77GB）。
-        # 濾鏡生出來的 color 源會跟著主軌結束，沒有這個問題。
+    # 「整頁切走」：那幾秒鋪一層不透明底幕把人蓋掉，素材獨佔畫面。
+    # 這是剪輯師插 B-roll 的做法——要嘛人在畫面上、要嘛整個切走，
+    # 不要把人壓成一小條（熊董：「換舞台也不必把人切到低於一半吧？」）。
+    #
+    # 底幕用 color+drawgrid 濾鏡生，不要用 `-loop 1` 餵 PNG：靜態圖當輸入是
+    # 無限長的流，overlay 的 shortest 收不住，ffmpeg 會一路編下去
+    # （這個坑踩過兩次，709MB 與 1.77GB）。
+    fspans = full_spans(layers)
+    if fspans:
         step = max(40, w // 18)
-        frags.append(f"color=c={STAGE_BG}:s={w}x{h}:r=24,"
-                     f"drawgrid=w={step}:h={step}:t=1:c=0x12161C@1[sbg]")
+        frags.append(f"color=c={FULL_BG}:s={w}x{h}:r=24,"
+                     f"drawgrid=w={step}:h={step}:t=1:c=0x12161C@1[fbg]")
+        frags.append(f"[{base_label}][fbg]overlay=x=0:y=0:shortest=1:"
+                     f"enable='{_expr(fspans)}'[fv]")
+        prev = "fv"
 
-        frags.append(f"[{base_label}]split=2[sfull][sforwin]")
-        frags.append(f"[sforwin]crop={w}:{crop_h}:0:{crop_y},"
-                     f"scale={ww}:{wh}[swin]")
-        if mask_png and os.path.exists(mask_png):
-            # 遮罩是單張圖，用 movie 讀進來當濾鏡源，同樣避開 `-loop` 輸入。
-            # 路徑用專案現成的 esc()——Windows 的 `C:` 冒號會被當成參數分隔符。
-            from .style import esc as _esc
-            frags.append(f"movie='{_esc(mask_png)}',scale={ww}:{wh},"
-                         f"format=gray[smk]")
-            frags.append("[swin][smk]alphamerge[swin2]")
-        else:
-            frags.append("[swin]null[swin2]")
-        # 硬切：enable 直接開關，沒有淡入淡出。剪輯師就是這樣切的。
-        frags.append(f"[sbg][sfull]overlay=x=0:y=0:shortest=1:"
-                     f"enable='{_expr(spans, invert=True)}'[sv0]")
-        frags.append(f"[sv0][swin2]overlay=x={wx}:y={wy}:"
-                     f"enable='{_expr(spans)}'[sv1]")
-        prev = "sv1"
+    layer0 = first_input
 
     for i, L in enumerate(layers, start=1):
         idx = layer0 + i - 1
@@ -261,18 +216,19 @@ def build(layers: List[dict], w: int, h: int, base_label: str = "base",
         cfg = plan(L, w, h)
         d = cfg["trans_sec"]
 
-        # 圖層：先撐到需要的長度，再套轉場，最後位移到它該出現的秒數
-        chain = [f"tpad=stop_mode=clone:stop_duration={max(0.1, e - s):.3f}"]
+        # 圖層：套轉場，再位移到它該出現的秒數。
+        # **不要 tpad**——PNG 序列已經涵蓋整個顯示時間（含退場動畫），
+        # 再撐就會在退場之後多出一段靜止的殘影。
+        chain = []
         t = TRANSITIONS[cfg["transition"]](s, e, d, w, h)
         if t:
             chain.append(t)
         chain.append(f"setpts=PTS-STARTPTS+{s:.3f}/TB")
         frags.append(f"[{idx}:v]" + ",".join(chain) + f"[L{i}]")
 
-        if cfg["placement"] == "stage":
-            # 置中在「畫面頂端 ~ 字幕」那塊空出來的舞台，不是整個畫面置中
-            y = max(40, (stage_subtitle_y(h) - 60 - lh) // 2)
-            x, y = "(W-w)/2", str(y)
+        if L.get("y") is not None:
+            # 呼叫端算好的位置（例如「放在頭上方剛好不蓋到人」）優先
+            x, y = "(W-w)/2", str(int(L["y"]))
         else:
             x, y = PLACEMENTS[cfg["placement"]](w, h, lw, lh)
         mv = _MOTION.get(cfg["transition"])
