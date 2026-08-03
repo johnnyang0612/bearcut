@@ -37,6 +37,9 @@ def _p_upper(w, h, lw, lh):
 TOP_MARGIN = 70
 HEAD_GAP = 46
 MIN_READABLE_ZOOM = 0.62   # 縮到比這還小就看不清楚了，那就別硬塞
+#: 開場的 hook 區間。這幾秒不整頁切走——滑手機的人要先看到「這是誰在講」，
+#: 一開場就是滿版圖表，他不知道自己在看誰就滑走了。
+HOOK_SEC = 4.0
 
 
 def fit_above_head(w: int, h: int, tpl_w: int, tpl_h: int,

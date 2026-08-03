@@ -141,12 +141,32 @@ def _traceable(value: float, text: str, unit: str = "") -> bool:
     return False
 
 
+#: 單位欄位不該出現的字。判斷腦常把「破千萬」「欠六百萬」整句塞進單位，
+#: 那不是單位是動詞片語——畫面上會變成「10,000,000 破千萬」。
+_NOT_UNIT = set("破欠虧賺賺省翻漲跌達成的了是有")
+
+
+def _clean_unit(unit: str) -> str:
+    """把不是單位的東西清掉。單位就是「萬」「人」「%」這種，不是一句話。"""
+    u = (unit or "").strip()
+    if not u or len(u) > 4:
+        return ""
+    if any(c in _NOT_UNIT for c in u):
+        return ""
+    return u
+
+
 def _human_number(num: float, unit: str) -> Tuple[float, str]:
     """把數字換成中文習慣的量級。6000000 → (600, "萬")。
 
-    單位裡已經有量級字（「萬元」）就不再換算，否則會變成 600 萬萬。
+    單位**開頭**已經是量級字（「萬元」）就不再換算，否則會變成 600 萬萬。
+    只看開頭：「破千萬」裡雖然有「千萬」，但那是動詞片語不是單位，
+    用 `in` 判斷會誤跳過縮放，畫面上就出現「10,000,000 破千萬」。
     """
-    if any(c in unit for c in "萬億千百"):
+    # ⚠️ 要先確認非空。`"" in "萬億千百"` 在 Python 裡是 True
+    # （空字串永遠是子字串），沒有單位的數字就永遠不會被縮放，
+    # 畫面上直接出現 10,000,000。
+    if unit and unit[0] in "萬億千百":
         return num, unit
     if abs(num) >= 100000000:
         return num / 100000000, "億" + unit
@@ -237,7 +257,8 @@ def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
                 continue
             # 模板的單位是獨立的文字欄位（big + unit、leftValue + leftUnit），
             # 由宣告檔的 unitField 指過去——「1000」配「萬」要對得上「破千萬」。
-            unit = str(fields.get(decl.get("unitField") or "", "") or "")
+            unit = _clean_unit(str(fields.get(decl.get("unitField") or "", "")
+                                   or ""))
             if decl.get("factual") and not _traceable(num, window, unit):
                 return None          # 畫面上會被當事實的數字，對不上就整條丟掉
             lo, hi = decl.get("min"), decl.get("max")

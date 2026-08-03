@@ -199,6 +199,21 @@ def make(video: str, srt: Optional[str] = None,
                         meta = dict(meta, placement="full")
                         report(93, f"動畫 {i}（{fx['template']}）"
                                    f"頭上方放不下，改成整頁切走")
+                # 開場是 hook——觀眾要先看到人，前幾秒不整頁切走。
+                # 一開場就是滿版圖表，滑手機的人不知道自己在看誰。
+                if (meta.get("placement") == "full"
+                        and float(fx["start"]) < _ins0.HOOK_SEC):
+                    fit = _ins0.fit_above_head(_vert.W, _vert.H, fx["w"],
+                                               fx["h"], head_top,
+                                               meta.get("min_zoom"))
+                    if fit:
+                        meta = dict(meta, placement="upper")
+                        z, y = fit
+                        report(93, f"動畫 {i} 在開場 {fx['start']:.1f} 秒，"
+                                   f"改壓在畫面上方（開場要先看到人）")
+                    else:
+                        report(93, f"動畫 {i} 在開場但放不下，整張略過")
+                        continue
                 if meta.get("placement") == "full":
                     z = _ins0.fit_full(_vert.W, _vert.H, fx["w"], fx["h"])
                 # 算滿整個顯示時間，讓退場動畫也被算進去。
@@ -238,6 +253,20 @@ def make(video: str, srt: Optional[str] = None,
             json.dump({str(k): v for k, v in sorted(colour_plan.items())},
                       f, ensure_ascii=False, indent=1)
         out["colour_plan"] = _p
+
+    # 字卡讓位在這裡做，不是在 build_ass 裡面——那樣的話回傳的 card_list
+    # 還是未過濾的，同步檢查會看到「示意圖與大字卡撞期」的假警報，
+    # 而且 out["cards"] 報的張數也跟畫面上的對不起來。
+    if insert_layers:
+        _busy = [(float(v["start"]) - 0.2, float(v["end"]) + 0.2)
+                 for v in insert_layers]
+        kept = [c for c in card_list
+                if not any(float(c["start"]) < e and float(c["end"]) > b
+                           for b, e in _busy)]
+        if len(kept) < len(card_list):
+            report(94, f"大字卡讓位 {len(card_list) - len(kept)} 張"
+                       f"（那幾秒畫面上是動畫）")
+        card_list = kept
 
     _vert.build_ass(subs, out["ass"], title=title, cta=cta, visuals=ass_visuals,
                     stage_fx=insert_layers, card_list=card_list,
@@ -331,13 +360,19 @@ def _sync_qa(subs, visuals, cards, video) -> str:
             if float(a["end"]) > float(b["start"]) + 0.05:
                 warn.append(f"⚠ 字幕重疊：{a['end']:.2f} > {b['start']:.2f}"
                             f"（「{a['text'][:10]}」與「{b['text'][:10]}」）")
-        # 太快的字幕看不完：一秒最多讀 9 個中文字
+        # 太快的字幕看不完：一秒最多讀 9 個中文字。
+        # 算的是**畫面上實際顯示的那一段**——長句會被拆成兩段依序顯示，
+        # 拿整句的字數去除整句的秒數會誤報。
+        from .subs import split_rows as _rows
+        from .visual.style import TYPE as _T
         for s in subs:
-            n = len(s.get("text", ""))
-            span = float(s["end"]) - float(s["start"])
-            if span > 0 and n / span > 9:
+            rows = _rows(s.get("text", ""), max_len=_T["sub_max_len"])
+            n_chunk = max(1, (len(rows) + 1) // 2)
+            per = (float(s["end"]) - float(s["start"])) / n_chunk
+            n = len(s.get("text", "")) / n_chunk
+            if per > 0 and n / per > 9:
                 warn.append(f"⚠ 字幕太快：{s['start']:.2f} 秒的「{s['text'][:12]}」"
-                            f"（{n} 字只有 {span:.2f} 秒）")
+                            f"（每段約 {n:.0f} 字只有 {per:.2f} 秒）")
 
     for v in visuals:
         if dur and float(v["end"]) > dur + 0.3:
