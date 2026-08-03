@@ -1,0 +1,73 @@
+{
+  "$說明": [
+    "動畫模板的配色。模板只寫設計代號（var(--bc-accent)），實際顏色由這裡決定，",
+    "所以換一套配色不用改任何一支模板。",
+    "",
+    "要自己配一套：複製一組改顏色就好，名字自取。",
+    "跑的時候用 bearcut cut <影片> --theme <名字>，或在設定檔裡指定預設。",
+    "",
+    "代號的意思：",
+    "  bg / bg2      卡片底色（漸層兩端），bg 較深",
+    "  surface       卡片裡面的區塊底（清單列、格子）",
+    "  line          邊框與分隔線",
+    "  text / text2  主要文字 / 次要文字",
+    "  accent        主色——數字、重點、進度",
+    "  accent2       次色，跟 accent 做漸層",
+    "  accent3       第三個點綴色",
+    "  good / bad    正面 / 負面（達成綠、虧損紅）",
+    "  ink / paper   亮底模板專用（大字報）"
+  ],
+  "default": "midnight",
+  "themes": {
+    "midnight": {
+      "$name": "午夜金",
+      "$desc": "深藍底配金橘。BearCut 預設，沉穩而且金色在深底上最跳。",
+      "bg": "#080D18", "bg2": "#141F33", "surface": "#16233A",
+      "line": "rgba(255,255,255,.08)",
+      "text": "#FFFFFF", "text2": "#8B909C",
+      "accent": "#FFC800", "accent2": "#FF7D0A", "accent3": "#F0D060",
+      "good": "#60C878", "bad": "#FF5A5A",
+      "ink": "#16181D", "paper": "#F7F3EA"
+    },
+    "carbon": {
+      "$name": "碳黑青",
+      "$desc": "近黑底配冰青。科技感最強，適合講系統、講工具。",
+      "bg": "#06080A", "bg2": "#101418", "surface": "#151A20",
+      "line": "rgba(255,255,255,.07)",
+      "text": "#FFFFFF", "text2": "#7E8590",
+      "accent": "#4DD8E8", "accent2": "#2E9FD4", "accent3": "#8FE6F0",
+      "good": "#5FD08A", "bad": "#FF6B6B",
+      "ink": "#0B0E12", "paper": "#EDF1F4"
+    },
+    "ember": {
+      "$name": "炭橘",
+      "$desc": "暖色系。講辛苦、講代價、講翻身的內容配這個最有溫度。",
+      "bg": "#12090A", "bg2": "#241214", "surface": "#2A1618",
+      "line": "rgba(255,255,255,.08)",
+      "text": "#FFF6F2", "text2": "#A08A85",
+      "accent": "#FF8A3D", "accent2": "#E8452F", "accent3": "#FFC15E",
+      "good": "#7BC96F", "bad": "#FF5A5A",
+      "ink": "#1A0E0C", "paper": "#FBF2EA"
+    },
+    "forest": {
+      "$name": "墨綠",
+      "$desc": "低調的綠。講穩定成長、講長期經營，不會像金色那麼張揚。",
+      "bg": "#07120E", "bg2": "#0F2119", "surface": "#132A20",
+      "line": "rgba(255,255,255,.08)",
+      "text": "#F2FBF6", "text2": "#7E9A8C",
+      "accent": "#7BE8A8", "accent2": "#2FA36B", "accent3": "#C8F2A0",
+      "good": "#7BE8A8", "bad": "#FF7A6B",
+      "ink": "#0B1A14", "paper": "#F0F7F2"
+    },
+    "mono": {
+      "$name": "純白黑",
+      "$desc": "只有黑白灰。不搶戲，讓內容本身說話；也最不會跟你的品牌色打架。",
+      "bg": "#0A0A0A", "bg2": "#1A1A1A", "surface": "#202020",
+      "line": "rgba(255,255,255,.10)",
+      "text": "#FFFFFF", "text2": "#8A8A8A",
+      "accent": "#FFFFFF", "accent2": "#B4B4B4", "accent3": "#D8D8D8",
+      "good": "#FFFFFF", "bad": "#FFFFFF",
+      "ink": "#111111", "paper": "#F5F5F5"
+    }
+  }
+}

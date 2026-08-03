@@ -50,6 +50,9 @@ GROW_SEC = 0.55
 CHART_TOP_PAD = 88
 # 一個視覺停留多久（秒）
 HOLD_SEC = 2.6
+#: 兩張圖之間交疊多久。前一張的退場與後一張的進場在中段接住，
+#: 觀眾感受到的是「換」而不是「消失，然後出現」。
+OVERLAP_SEC = 0.15
 
 # 中文數字 → 阿拉伯，用來驗證「五千」對得上 5000
 _CN = {"零": 0, "〇": 0, "一": 1, "二": 2, "兩": 2, "三": 3, "四": 4,
@@ -416,13 +419,16 @@ def pick(segments: List[dict], llm: Provider,
         if not isinstance(v, dict):
             continue
         is_fx = str(v.get("type", "")).strip() == FX
-        # 有模板可用時，ASS 陽春圖表一律不採用。
+        # ASS 陽春圖表**一律不採用**，沒有例外。
         #
-        # ASS 那套（純色矩形、描邊字）是「這台機器沒有瀏覽器」的降級路線，
-        # 不是拿來當成品的。實測把它燒進成片，觀感比不放還差——熊董的原話是
+        # ASS 那套（純色矩形、描邊字）實測燒進成片比不放還差——熊董的原話是
         # 「特效變得意義不明，這樣不如乾脆不用」。所以寧可少配幾個圖，
-        # 也不要用陽春圖表充數。判斷腦沒挑到合適模板，就是這句不該配圖。
-        if tpls and not is_fx:
+        # 也不要用陽春圖表充數。
+        #
+        # ⚠️ 這裡原本寫成 `if tpls and not is_fx`，只在**有模板時**才擋。
+        # 於是模板數為 0 的時候（規則包沒有 fx/），被判死刑的陽春圖表反而是
+        # 唯一會出貨的東西——正好跟本意相反。沒有模板就不要配圖。
+        if not is_fx:
             downgraded += 1
             continue
         spec = (_verify_fx(v, segments, tpls) if is_fx
@@ -434,12 +440,15 @@ def pick(segments: List[dict], llm: Provider,
         if len(out) >= max_n:
             break
 
-    # 圖不再被字幕段落夾住之後，前一張可能還沒收、後一張就進來了。
-    # 兩張圖疊在同一個位置就是一團糊，所以前一張提早收，中間留 0.25 秒空檔。
+    # 前一張還沒收、後一張就進來的話要處理，但**不是留空檔**。
+    #
+    # 原本強制留 0.25 秒空白——那不是轉場，那是停頓，觀眾感受到的是
+    # 「消失，然後出現」。讓前一張的退場（0.26s）跟後一張的進場（0.34s）
+    # 交疊 0.15 秒，兩者在中段接住，變成溶接而不是斷點。
     out.sort(key=lambda v: v["start"])
     for a, b in zip(out, out[1:]):
-        if a["end"] > b["start"] - 0.25:
-            a["end"] = max(a["start"] + 0.8, b["start"] - 0.25)
+        if a["end"] > b["start"] + OVERLAP_SEC:
+            a["end"] = max(a["start"] + 0.8, b["start"] + OVERLAP_SEC)
     if downgraded:
         say(55, f"略過 {downgraded} 個只能用陽春圖表呈現的（寧可不配，也不要降低質感）")
     say(56, f"配了 {len(out)} 個動態示意圖")

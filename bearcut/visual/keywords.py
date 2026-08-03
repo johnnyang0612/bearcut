@@ -126,6 +126,36 @@ def colorize(text: str, spans, colour: str = PALETTE["yellow"],
     return "".join(out)
 
 
+#: 詞被斷行切開時，至少要有這麼多字落在這一列才值得上色。
+#: 太短的殘塊上色只會看起來像手滑。
+_MIN_PARTIAL = 2
+
+
+def _locate(row: str, word: str) -> Optional[Tuple[int, int]]:
+    """在這一列字幕裡找出這個詞的位置。回 `(start, end)`，找不到回 None。
+
+    ⚠️ 判斷腦是對「整句」挑詞的，但字幕會斷行——「欠了六七百萬」很可能
+    被切成「那基本上曾經欠了」＋「六七百萬」兩列，整詞在任一列都找不到。
+    直接放棄的話就退回內建規則，標色計畫等於白做（實測就是這樣：
+    該標紅的「欠了六七百萬」變成內建規則挑的「六七百萬」上金色）。
+
+    所以找不到整詞時，退而求其次找**跨行的那一半**：
+    這一列的結尾是不是詞的開頭，或這一列的開頭是不是詞的結尾。
+    """
+    i = row.find(word)
+    if i >= 0:
+        return i, i + len(word)
+    # 這一列的結尾 = 詞的前半
+    for n in range(len(word) - 1, _MIN_PARTIAL - 1, -1):
+        if row.endswith(word[:n]):
+            return len(row) - n, len(row)
+    # 這一列的開頭 = 詞的後半
+    for n in range(len(word) - 1, _MIN_PARTIAL - 1, -1):
+        if row.startswith(word[-n:]):
+            return 0, n
+    return None
+
+
 def decorate(text: str, extra: Optional[List[str]] = None,
              long_form: bool = False, plan: Optional[list] = None) -> str:
     """一站式：找關鍵詞並上色。
@@ -139,14 +169,16 @@ def decorate(text: str, extra: Optional[List[str]] = None,
     if plan:
         spans = []
         for word, tone in plan:
-            i = text.find(word)
-            # 找不到就跳過：判斷腦挑的詞不一定落在這一列（字幕會斷行），
-            # 硬套會上錯位置。這是「絕不信判斷腦的座標」同一條紀律。
-            if i >= 0 and not any(not (i + len(word) <= s or i >= e)
-                                  for s, e, *_ in spans):
-                spans.append((i, i + len(word), tone))
-        if spans:
-            return colorize(text, sorted(spans)[:1 if long_form else 2])
+            hit = _locate(text, word)
+            # 位置一律自己找，不信判斷腦報的索引——跟「絕不信它回傳的秒數」
+            # 是同一條紀律。找不到就跳過，硬套會上錯位置。
+            if hit and not any(not (hit[1] <= s or hit[0] >= e)
+                               for s, e, *_ in spans):
+                spans.append((hit[0], hit[1], tone))
+        # 有計畫就照計畫，這一列沒命中就**不上色**——不要退回內建規則。
+        # 退回的話同一句會出現兩種上色（實測「一人公司10個／月就破千萬」
+        # 第一列被內建規則挑了「一人」上金色，跟計畫挑的「破千萬」打架）。
+        return colorize(text, sorted(spans)[:1 if long_form else 2])
 
     spans = find(text, extra, max_per_line=1 if long_form else 2)
     if long_form and spans:

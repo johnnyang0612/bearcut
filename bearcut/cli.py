@@ -73,6 +73,44 @@ def cmd_cut(args) -> int:
     return 0
 
 
+def cmd_themes(args) -> int:
+    """列出可用的配色。配色住在規則包，使用者可以自己加。"""
+    import json as _json
+    from .rules import RULEPACK_DIR
+    from .visual import webfx
+
+    ts = webfx.themes()
+    meta = {}
+    p = RULEPACK_DIR / "fx" / "_themes.json"
+    if p.exists():
+        try:
+            raw = _json.loads(p.read_text(encoding="utf-8"))
+            meta = raw.get("themes") or {}
+            default = raw.get("default", "")
+        except (ValueError, OSError):
+            default = ""
+    else:
+        default = ""
+
+    if getattr(args, "json", False):
+        print(_json.dumps({"default": default, "themes": ts},
+                          ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"\n  可用配色（規則包：{RULEPACK_DIR}）\n")
+    for name, colours in ts.items():
+        m = meta.get(name) or {}
+        mark = "★ 預設" if name == default else "     "
+        print(f"  {mark} {name:10} {m.get('$name', '')}")
+        if m.get("$desc"):
+            print(f"           {m['$desc']}")
+        print(f"           主色 {colours.get('accent')}　"
+              f"底色 {colours.get('bg')}")
+    print("\n  用法：bearcut shortform <影片> --theme <名字>")
+    print("  想自己配一套：改規則包裡的 fx/_themes.json，複製一組改顏色就好。\n")
+    return 0
+
+
 def cmd_shortform(args) -> int:
     """把剪好的片做成直式短影音。"""
     from .shortform import make
@@ -85,7 +123,7 @@ def cmd_shortform(args) -> int:
                output_dir=args.out, use_cards=not args.no_cards,
                use_visuals=not args.no_visuals,
                follow_speaker=args.follow, make_cover=not args.no_cover,
-               progress_cb=prog)
+               theme=getattr(args, "theme", None), progress_cb=prog)
     human = (f"\n  直式短片：{res['video']}"
              + (f"\n  封面　　：{res['cover']}" if res.get("cover") else "")
              + f"\n  大字卡　：{len(res.get('cards') or [])} 張"
@@ -355,6 +393,9 @@ def build_parser() -> argparse.ArgumentParser:
     sf.add_argument("--srt", help="字幕檔（預設找同名的）")
     sf.add_argument("--title", help="開場標題")
     sf.add_argument("--cta", help="結尾行動呼籲")
+    sf.add_argument("--theme", metavar="名字",
+                    help="動態示意圖的配色。不指定就用規則包的預設。"
+                         "有哪些可以用：bearcut themes")
     sf.add_argument("--out", metavar="資料夾", help="輸出位置")
     sf.add_argument("--follow", action="store_true", help="追講者裁切（單人時才生效）")
     sf.add_argument("--no-cards", action="store_true", help="不做大字卡")
@@ -362,6 +403,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="不做動態示意圖（圖表、流程、計數器）")
     sf.add_argument("--no-cover", action="store_true", help="不做封面")
     sf.set_defaults(func=cmd_shortform)
+
+    th = sub.add_parser("themes", help="列出動態示意圖可用的配色")
+    th.set_defaults(func=cmd_themes)
 
     q = sub.add_parser("verify", help="檢查已剪好的成片（音畫字同步、字幕、接縫畫面）")
     q.add_argument("video", help="成片路徑")

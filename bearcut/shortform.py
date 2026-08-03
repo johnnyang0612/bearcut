@@ -50,6 +50,7 @@ def make(video: str, srt: Optional[str] = None,
          use_cards: bool = True, use_visuals: bool = True,
          follow_speaker: bool = False,
          logo: Optional[str] = None, make_cover: bool = True,
+         theme: Optional[str] = None,
          progress_cb: Optional[Callable] = None) -> dict:
     """把一支剪好的片做成直式短影音。回產出的路徑。"""
     def report(p, m):
@@ -206,7 +207,7 @@ def make(video: str, srt: Optional[str] = None,
                 frames = _webfx.render_frames(
                     pathlib.Path(tpl["html"]).read_text(encoding="utf-8"),
                     fd, data=fx["fields"], w=fx["w"], h=fx["h"],
-                    dur=span, zoom=z, progress_cb=None)
+                    dur=span, zoom=z, theme=theme, progress_cb=None)
                 if frames:
                     insert_layers.append({
                         "frames_pattern": os.path.join(fd, "f_%04d.png"),
@@ -261,6 +262,101 @@ def make(video: str, srt: Optional[str] = None,
         else:
             out.pop("cover", None)
 
+    # ── 可複核的計畫檔 ──────────────────────────────────────
+    # 跟 _待剪清單.json 同一個用意：把「機器決定了什麼」攤開讓人看得懂、改得動。
+    # 不想要某張圖、想換個模板、想改文字，改這個檔重跑就好，不用重新辨識。
+    if visual_list or card_list:
+        marks = {
+            "$說明": "動態示意圖與大字卡的插入計畫。改完重跑就會照這份走。",
+            "示意圖": [
+                {"秒數": round(float(v["start"]), 2),
+                 "到": round(float(v["end"]), 2),
+                 "模板": v.get("template") or v.get("type"),
+                 "版位": (v.get("meta") or {}).get("placement", "upper"),
+                 "欄位": v.get("fields") or v.get("values") or v.get("steps"),
+                 "依據原句": v.get("source", "")}
+                for v in sorted(visual_list, key=lambda x: x["start"])],
+            "大字卡": [
+                {"秒數": round(float(c["start"]), 2),
+                 "到": round(float(c["end"]), 2),
+                 "上": c.get("top", ""), "主": c.get("key", "")}
+                for c in sorted(card_list, key=lambda x: x["start"])],
+        }
+        p = os.path.join(d, f"{base}_視覺標記.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(marks, f, ensure_ascii=False, indent=1)
+        out["marks"] = p
+
+    # 同步 QA：字幕與畫面的時間軸有沒有對上。
+    # 這屬於「剪完自己回測」的承諾，所以免費版也要有。
+    try:
+        qa = _sync_qa(subs, visual_list, card_list, out["video"])
+        p = os.path.join(d, f"{base}_同步QA.txt")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(qa)
+        out["sync_qa"] = p
+        bad = sum(1 for ln in qa.splitlines() if ln.startswith("  ⚠"))
+        report(99, f"同步檢查：{'全部正常' if not bad else f'{bad} 項提醒'}")
+    except Exception as e:
+        report(99, f"同步檢查略過（{e}）")
+
     out["cards"] = card_list
     out["visuals"] = visual_list
     return out
+
+
+def _sync_qa(subs, visuals, cards, video) -> str:
+    """字幕與畫面的同步檢查。回一份人看得懂的報告。
+
+    檢查的是「時間軸對不對」，不是「內容好不好」——後者要人看。
+    """
+    lines = ["BearCut 同步檢查", "=" * 40, ""]
+    try:
+        dur = media.get_duration(video)
+    except Exception:
+        dur = 0.0
+    lines.append(f"成片長度　{dur:.2f} 秒")
+    lines.append(f"字幕　　　{len(subs)} 句")
+    lines.append(f"示意圖　　{len(visuals)} 個")
+    lines.append(f"大字卡　　{len(cards)} 張")
+    lines.append("")
+
+    warn = []
+    if subs:
+        last = max(float(s["end"]) for s in subs)
+        if dur and last > dur + 0.5:
+            warn.append(f"⚠ 字幕最後一句到 {last:.2f} 秒，超出成片 {dur:.2f} 秒")
+        # 字幕之間不該重疊
+        for a, b in zip(subs, subs[1:]):
+            if float(a["end"]) > float(b["start"]) + 0.05:
+                warn.append(f"⚠ 字幕重疊：{a['end']:.2f} > {b['start']:.2f}"
+                            f"（「{a['text'][:10]}」與「{b['text'][:10]}」）")
+        # 太快的字幕看不完：一秒最多讀 9 個中文字
+        for s in subs:
+            n = len(s.get("text", ""))
+            span = float(s["end"]) - float(s["start"])
+            if span > 0 and n / span > 9:
+                warn.append(f"⚠ 字幕太快：{s['start']:.2f} 秒的「{s['text'][:12]}」"
+                            f"（{n} 字只有 {span:.2f} 秒）")
+
+    for v in visuals:
+        if dur and float(v["end"]) > dur + 0.3:
+            warn.append(f"⚠ 示意圖超出片尾：{v['start']:.2f}~{v['end']:.2f} 秒")
+        if float(v["end"]) - float(v["start"]) < 1.0:
+            warn.append(f"⚠ 示意圖太短：{v['start']:.2f} 秒只掛 "
+                        f"{float(v['end']) - float(v['start']):.2f} 秒")
+    # 示意圖與大字卡不該同時在畫面上——兩者都在上半部
+    for v in visuals:
+        for c in cards:
+            if float(v["start"]) < float(c["end"]) and \
+               float(v["end"]) > float(c["start"]):
+                warn.append(f"⚠ 示意圖與大字卡時間重疊："
+                            f"{v['start']:.2f} 秒的圖 vs {c['start']:.2f} 秒的卡")
+
+    if warn:
+        lines.append(f"提醒 {len(warn)} 項：")
+        lines += [f"  {w}" for w in warn]
+    else:
+        lines.append("沒有發現時間軸問題。")
+    lines += ["", "（這份只檢查時間軸對不對，內容好不好還是要看片。）"]
+    return "\n".join(lines) + "\n"

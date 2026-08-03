@@ -105,6 +105,9 @@ MAX_STRIP_PX = 14000
 
 _STRIP = """<!doctype html><meta charset="utf-8">
 <style>
+  /* 配色代號。模板只寫 var(--bc-accent)，實際顏色由主題決定，
+     所以換一套配色不用改任何一支模板。主題住在規則包的 fx/_themes.json。 */
+  :root{{{tokens}}}
   html,body{{margin:0;padding:0;background:transparent}}
   .bc-strip{{display:block}}
   .bc-cell{{width:{w}px;height:{h}px;overflow:visible;position:relative}}
@@ -121,16 +124,30 @@ _STRIP = """<!doctype html><meta charset="utf-8">
      而且不用改任何一支模板。
 
      退場比進場快（0.26s vs 0.34s）：東西要走得比來得果斷，
-     拖泥帶水的退場會讓節奏黏住。 */
+     拖泥帶水的退場會讓節奏黏住。
+
+     ⚠️ 外層的 `linear` 一定要留著——百分比位置編碼的是「停留多久」，
+     換成曲線會把停留時間也一起扭曲。真正的緩動寫在各段的
+     `animation-timing-function` 裡（CSS 允許逐段指定）。
+     整條時間軸等速的話，觀眾先看到的是整張卡片等速平移，
+     模板內部那些精心編排的 cubic-bezier 全被這層信封蓋掉。
+
+     模糊只到 4px 而且在 68% 就收掉：模糊屬於「效果類」屬性，
+     要比空間位移更早結束。跟位移一起跑滿全程的話，前 1/3 是一團糊影。 */
   .bc-life{{
     animation: bc-life {total:.3f}s linear both;
     transform-origin: 50% 30%;
   }}
   @keyframes bc-life {{
-    0%      {{ opacity:0; transform: translateY(34px) scale(.955); filter: blur(7px) }}
-    {in_a}% {{ opacity:1; transform: translateY(0)    scale(1);    filter: blur(0) }}
-    {out_a}%{{ opacity:1; transform: translateY(0)    scale(1);    filter: blur(0) }}
-    100%    {{ opacity:0; transform: translateY(-20px) scale(.985); filter: blur(5px) }}
+    0%      {{ opacity:0; transform: translateY(34px) scale(.955); filter: blur(4px);
+               animation-timing-function: cubic-bezier(.05,.7,.1,1) }}
+    {in_b}% {{ opacity:1; transform: translateY(-4px) scale(1.008); filter: blur(0);
+               animation-timing-function: cubic-bezier(.2,0,0,1) }}
+    {in_a}% {{ opacity:1; transform: translateY(0)    scale(1);     filter: blur(0);
+               animation-timing-function: linear }}
+    {out_a}%{{ opacity:1; transform: translateY(0)    scale(1);     filter: blur(0);
+               animation-timing-function: cubic-bezier(.3,0,.8,.15) }}
+    100%    {{ opacity:0; transform: translateY(-20px) scale(.985); filter: blur(3px) }}
   }}
 </style>
 <div class="bc-strip">{cells}</div>
@@ -164,6 +181,7 @@ def _fill(template: str, data: dict) -> str:
 def render_frames(template_html: str, out_dir: str, data: Optional[dict] = None,
                   w: int = 1000, h: int = 520, fps: int = 24, dur: float = 1.6,
                   timeout: int = 120, zoom: float = 1.0,
+                  theme: Optional[str] = None,
                   progress_cb: Optional[Callable] = None) -> List[str]:
     """把模板渲染成一串透明 PNG。回檔案路徑清單（已排序）。
 
@@ -186,7 +204,9 @@ def render_frames(template_html: str, out_dir: str, data: Optional[dict] = None,
     w, h = int(round(w * zoom)), int(round(h * zoom))
     body = _fill(template_html, data or {})
     # 進場 0.34 秒、退場 0.26 秒，其餘時間停著。換算成百分比給 keyframes。
+    tokens = theme_css(theme)
     in_a = min(45.0, 0.34 / max(dur, 0.6) * 100)
+    in_b = in_a * 0.68          # 不透明度與模糊在空間位移之前先收掉
     out_a = max(in_a + 5, 100 - 0.26 / max(dur, 0.6) * 100)
 
     # ⚠️ 一張長條圖裝得下幾格是有上限的。瀏覽器的截圖高度大約卡在 16384px，
@@ -207,7 +227,9 @@ def render_frames(template_html: str, out_dir: str, data: Optional[dict] = None,
                 for _ in range(cnt))
             page = _STRIP.format(w=w, h=h, fps=fps, n=cnt, cells=cells,
                                  zoom=zoom, total=dur, offset=base,
-                                 in_a=f"{in_a:.1f}", out_a=f"{out_a:.1f}")
+                                 tokens=tokens,
+                                 in_a=f"{in_a:.1f}", in_b=f"{in_b:.1f}",
+                                 out_a=f"{out_a:.1f}")
             html = Path(td) / f"strip{batch}.html"
             html.write_text(page, encoding="utf-8")
             strip = Path(td) / f"strip{batch}.png"
@@ -273,6 +295,54 @@ def overlay(video: str, frames_dir: str, out_path: str,
         raise RuntimeError("疊圖失敗：\n" + "\n".join(tail))
     say(100, "完成")
     return out_path
+
+
+#: 配色代號的預設值。規則包沒有 _themes.json 時用這組——
+#: 少了主題檔不該讓動畫整個變透明，那比配色不對嚴重得多。
+_FALLBACK_THEME = {
+    "bg": "#080D18", "bg2": "#141F33", "surface": "#16233A",
+    "line": "rgba(255,255,255,.08)", "text": "#FFFFFF", "text2": "#8B909C",
+    "accent": "#FFC800", "accent2": "#FF7D0A", "accent3": "#F0D060",
+    "good": "#60C878", "bad": "#FF5A5A",
+    "ink": "#16181D", "paper": "#F7F3EA",
+}
+
+
+def themes(rulepack_dir: Optional[Path] = None) -> dict:
+    """規則包裡有哪些配色。回 `{名字: {代號: 顏色}}`。"""
+    from ..rules import RULEPACK_DIR
+    p = Path(rulepack_dir or RULEPACK_DIR) / "fx" / "_themes.json"
+    if not p.exists():
+        return {"midnight": dict(_FALLBACK_THEME)}
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"midnight": dict(_FALLBACK_THEME)}
+    out = {}
+    for name, t in (d.get("themes") or {}).items():
+        if name.startswith("$"):
+            continue
+        out[name] = {k: v for k, v in t.items() if not k.startswith("$")}
+    return out or {"midnight": dict(_FALLBACK_THEME)}
+
+
+def theme_css(name: Optional[str] = None,
+              rulepack_dir: Optional[Path] = None) -> str:
+    """把配色轉成 CSS 變數宣告。找不到指定的配色就用預設，不要壞掉。"""
+    ts = themes(rulepack_dir)
+    from ..rules import RULEPACK_DIR
+    default = "midnight"
+    p = Path(rulepack_dir or RULEPACK_DIR) / "fx" / "_themes.json"
+    if p.exists():
+        try:
+            default = json.loads(p.read_text(encoding="utf-8")).get(
+                "default", default)
+        except (json.JSONDecodeError, OSError):
+            pass
+    t = ts.get(name or default) or ts.get(default) or next(iter(ts.values()))
+    merged = dict(_FALLBACK_THEME)
+    merged.update(t)                      # 主題沒定義的代號用預設補齊
+    return "".join(f"--bc-{k}:{v};" for k, v in merged.items())
 
 
 def templates(rulepack_dir: Optional[Path] = None) -> dict:

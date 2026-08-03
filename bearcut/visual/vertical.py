@@ -70,7 +70,14 @@ def build_ass(subs: List[dict], ass_path: str,
     def _on_stage(s0, s1):
         return any(s0 < e and s1 > b for b, e in _spans)
 
-    # 字幕：每列最多 8 字（8×72px + 關鍵詞放大 118% 仍 < 700px 安全寬）
+    # 字幕：每列最多 8 字（8×72px + 關鍵詞放大 118% 仍 < 700px 安全寬），
+    # 畫面上同時最多 2 列。字幕不移位——整頁切走時它照樣壓在最上層，
+    # 剪輯師切 B-roll 的時候字幕也不會消失。
+    #
+    # ⚠️ 超過 2 列的句子要**拆成兩段依序顯示**，不可以直接截掉。
+    # 原本寫 `rows[:2]`，實測 29 句裡有 12 句（41%）尾巴被丟掉——
+    # 「AIERP」「AINative」「Podcast」「全部我都AI化了」整段沒出現在畫面上。
+    # 一句話放不下就分兩次講完，這是字幕的基本做法。
     for _i, s in enumerate(subs):
         text = clean_text(s.get("text", ""))
         if not text:
@@ -79,13 +86,22 @@ def build_ass(subs: List[dict], ass_path: str,
         # 標色計畫是以「第幾句」為鍵，所以要用列舉的索引，不能用 list.index()
         # ——同樣的句子出現兩次的話 index() 會一直回第一次的位置。
         plan = (colour_plan or {}).get(_i)
-        body = "\\N".join(
-            _kw.decorate(r, keywords, long_form=long_form, plan=plan)
-            for r in rows[:2])
-        # 字幕不移位：整頁切走時字幕照樣壓在最上層，
-        # 剪輯師切 B-roll 的時候字幕也不會消失。
-        ev.append(f"Dialogue: 0,{ts(s['start'])},{ts(s['end'])},Sub,,0,0,0,,"
-                  f"{{\\fad({TYPE['fade_ms']},{TYPE['fade_ms']})}}{body}")
+        chunks = [rows[i:i + 2] for i in range(0, len(rows), 2)] or [rows]
+        t0, t1 = float(s["start"]), float(s["end"])
+        total = sum(len("".join(c)) for c in chunks) or 1
+        at = t0
+        for ci, chunk in enumerate(chunks):
+            # 時間按字數分配——字多的那段停久一點，不是平均切
+            share = (t1 - t0) * (len("".join(chunk)) / total)
+            end = t1 if ci == len(chunks) - 1 else min(t1, at + max(0.4, share))
+            if end <= at:
+                continue
+            body = "\\N".join(
+                _kw.decorate(r, keywords, long_form=long_form, plan=plan)
+                for r in chunk)
+            ev.append(f"Dialogue: 0,{ts(at)},{ts(end)},Sub,,0,0,0,,"
+                      f"{{\\fad({TYPE['fade_ms']},{TYPE['fade_ms']})}}{body}")
+            at = end
 
     # 開場標題：前 3.5 秒，讓中途滑進來的人知道這支在講什麼。
     #
