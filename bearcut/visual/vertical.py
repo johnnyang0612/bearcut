@@ -58,11 +58,10 @@ def build_ass(subs: List[dict], ass_path: str,
     ev: List[str] = []
     cx = W // 2
 
-    # 動畫上台的那幾秒畫面會換版：人像縮到底部小窗，字幕要跟著移到小窗上方，
-    # 否則字會壓在小窗上。時間有交疊就整句移上去——一句話講到一半跳位置更難看。
-    from . import stage as _stage
-    stage_spans = _stage.windows(stage_fx or [])
-    stage_sub_y = _stage.subtitle_y(H)
+    # 動畫插進畫面的那幾秒，同時間的大字卡要讓位——兩個都在上半部，疊在一起
+    # 就是一團。字幕不用動：動畫壓在畫面上方，字幕在下方，本來就不打架。
+    stage_spans = [(float(v["start"]) - 0.2, float(v["end"]) + 0.2)
+                   for v in (stage_fx or [])]
 
     def _on_stage(s0, s1):
         return any(s0 < e and s1 > b for b, e in stage_spans)
@@ -75,10 +74,8 @@ def build_ass(subs: List[dict], ass_path: str,
         rows = split_rows(text, max_len=TYPE["sub_max_len"])
         body = "\\N".join(_kw.decorate(r, keywords, long_form=long_form)
                           for r in rows[:2])
-        place = (f"\\an5\\pos({cx},{stage_sub_y})"
-                 if _on_stage(s["start"], s["end"]) else "")
         ev.append(f"Dialogue: 0,{ts(s['start'])},{ts(s['end'])},Sub,,0,0,0,,"
-                  f"{{{place}\\fad({TYPE['fade_ms']},{TYPE['fade_ms']})}}{body}")
+                  f"{{\\fad({TYPE['fade_ms']},{TYPE['fade_ms']})}}{body}")
 
     # 開場標題：前 3.5 秒，讓中途滑進來的人知道這支在講什麼。
     #
@@ -121,7 +118,8 @@ def build_ass(subs: List[dict], ass_path: str,
 
 
 def _filter(ass_path: str, fonts_dir: str, logo: Optional[str] = None,
-            already_portrait: bool = False) -> str:
+            already_portrait: bool = False,
+            insert_layers: Optional[List[dict]] = None) -> str:
     """直式版面的 filter。
 
     來源比例不同，處理方式也不同：
@@ -142,16 +140,32 @@ def _filter(ass_path: str, fonts_dir: str, logo: Optional[str] = None,
 
     if logo and os.path.exists(logo):
         # LOGO 放右上角，避開頂帶字卡的置中區
-        return (f"{base};movie='{esc(logo)}',scale=140:-1[lg];"
-                f"[base][lg]overlay={W - 180}:40[based];"
-                f"[based]ass='{esc(ass_path)}':fontsdir='{esc(fonts_dir)}'[outv]")
-    return f"{base};[base]ass='{esc(ass_path)}':fontsdir='{esc(fonts_dir)}'[outv]"
+        base = (f"{base};movie='{esc(logo)}',scale=140:-1[lg];"
+                f"[base][lg]overlay={W - 180}:40[based];[based]null[base]")
+
+    # 插入圖接在字幕**之前**：圖在下、字幕在上。
+    # 反過來的話，整頁切走的圖會把字幕蓋掉——剪輯師切 B-roll 時字幕照樣在。
+    src = "base"
+    if insert_layers:
+        from . import inserts as _ins
+        frag, _ = _ins.build(insert_layers, W, H, base_label="base",
+                             out_label="gfx")
+        if frag:
+            base = f"{base};{frag}"
+            src = "gfx"
+    return (f"{base};[{src}]ass='{esc(ass_path)}':"
+            f"fontsdir='{esc(fonts_dir)}'[outv]")
 
 
 def render(video: str, ass_path: str, out_path: str, fonts_dir: str,
            logo: Optional[str] = None, crf: int = 19,
+           insert_layers: Optional[List[dict]] = None,
            progress_cb: Optional[Callable] = None) -> str:
-    """把橫式影片轉成直式並燒上字幕字卡。"""
+    """把橫式影片轉成直式並燒上字幕字卡。
+
+    `insert_layers` 是要插進畫面的動畫（PNG 序列）。跟字幕在同一次編碼裡做完，
+    不要事後再疊一輪——每疊一次就多一次有損轉檔。
+    """
     def report(p, m):
         if progress_cb:
             progress_cb(p, m)
@@ -171,10 +185,18 @@ def render(video: str, ass_path: str, out_path: str, fonts_dir: str,
     tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False,
                                       encoding="utf-8")
     try:
-        tmp.write(_filter(ass_path, fonts_dir, logo, already_portrait=portrait))
+        tmp.write(_filter(ass_path, fonts_dir, logo, already_portrait=portrait,
+                          insert_layers=insert_layers))
         tmp.close()
-        report(97, "轉直式並燒錄字幕字卡…")
-        r = media.ffmpeg(["-y", "-i", video, *media.filter_script_args(tmp.name),
+        extra: List[str] = []
+        if insert_layers:
+            from . import inserts as _ins
+            _, extra = _ins.build(insert_layers, W, H)
+            report(97, f"轉直式，燒字幕並插入 {len(insert_layers)} 段動畫…")
+        else:
+            report(97, "轉直式並燒錄字幕字卡…")
+        r = media.ffmpeg(["-y", "-i", video, *extra,
+                          *media.filter_script_args(tmp.name),
                           "-map", "[outv]", "-map", "0:a?",
                           "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                           "-pix_fmt", "yuv420p",

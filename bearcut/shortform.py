@@ -137,11 +137,49 @@ def make(video: str, srt: Optional[str] = None,
     # fx（HTML 模板）不進 ASS——它是獨立的透明圖層，燒完字幕之後才疊上去
     fx_list = [v for v in visual_list if v.get("type") == "fx"]
     ass_visuals = [v for v in visual_list if v.get("type") != "fx"]
-    # fx 不進 ASS，但它的時間區間要進去——字幕與字卡得知道哪幾秒畫面會換版
+    # fx 不進 ASS（它是 PNG 圖層），但它的時間區間要進去——
+    # 時間交疊的大字卡要讓位，不然會壓在動畫上
     _vert.build_ass(subs, out["ass"], title=title, cta=cta, visuals=ass_visuals,
                     stage_fx=fx_list, card_list=card_list, long_form=long_form)
-    _vert.render(src, out["ass"], out["video"], FONTS, logo=logo,
-                 progress_cb=progress_cb)
+
+    # 動畫先算成 PNG 序列，跟字幕在同一次編碼裡插進去。
+    # 分兩次做的話每次都是一輪有損轉檔，而且圖會蓋在字幕上。
+    fx_dir = None
+    insert_layers = []
+    if fx_list:
+        from .visual import webfx as _webfx
+        import tempfile as _tf
+        fx_dir = _tf.mkdtemp(prefix="bearcut-fx-")
+        tpls = _webfx.templates()
+        for i, fx in enumerate(fx_list, 1):
+            tpl = tpls.get(fx["template"])
+            if not tpl:
+                continue
+            try:
+                fd = os.path.join(fx_dir, f"L{i}")
+                os.makedirs(fd, exist_ok=True)
+                frames = _webfx.render_frames(
+                    pathlib.Path(tpl["html"]).read_text(encoding="utf-8"),
+                    fd, data=fx["fields"], w=fx["w"], h=fx["h"],
+                    dur=fx["dur"], progress_cb=None)
+                if frames:
+                    insert_layers.append({
+                        "frames_pattern": os.path.join(fd, "f_%04d.png"),
+                        "start": fx["start"], "end": fx["end"],
+                        "w": fx["w"], "h": fx["h"], "meta": tpl.get("meta") or {}})
+            except Exception as e:
+                report(92, f"動畫 {i} 算圖略過（{e}）")
+        if insert_layers:
+            report(93, f"算好 {len(insert_layers)} 段動畫，準備插入畫面")
+
+    try:
+        _vert.render(src, out["ass"], out["video"], FONTS, logo=logo,
+                     insert_layers=insert_layers or None,
+                     progress_cb=progress_cb)
+    finally:
+        if fx_dir:
+            import shutil as _sh
+            _sh.rmtree(fx_dir, ignore_errors=True)
 
     if make_cover:
         main = (card_list[0]["key"] if card_list else (title or base))[:12]
@@ -152,50 +190,6 @@ def make(video: str, srt: Optional[str] = None,
             report(99, f"封面已產出：{os.path.basename(c)}")
         else:
             out.pop("cover", None)
-
-    # ── fx 疊圖：一個一個疊上去 ─────────────────────────────
-    # 失敗不該讓整支短影音沒有產出——已經燒好字幕字卡的片還在，只是少了動畫。
-    if fx_list:
-        from .visual import stage as _stage
-        from .visual import webfx as _webfx
-        import tempfile as _tf
-        tpls = _webfx.templates()
-        # 所有動畫先各自算完格子，再一次合成——舊版每疊一個就整支重新編碼，
-        # 四個動畫等於四次有損轉檔。而且舊版沒有做時間位移，實測只有第一個
-        # 動畫真的出現在畫面上，程式卻回報「疊上 4 個」。
-        with _tf.TemporaryDirectory(prefix="bearcut-fx-") as td:
-            layers = []
-            for i, fx in enumerate(fx_list, 1):
-                tpl = tpls.get(fx["template"])
-                if not tpl:
-                    continue
-                try:
-                    fd = os.path.join(td, f"L{i}")
-                    os.makedirs(fd, exist_ok=True)
-                    # 模板用設計尺寸寫，撐滿舞台要放大——用 zoom 而不是事後拉伸，
-                    # 出來仍然是原生解析度
-                    z = _stage.zoom_for(_vert.W, fx["w"])
-                    frames = _webfx.render_frames(
-                        pathlib.Path(tpl["html"]).read_text(encoding="utf-8"),
-                        fd, data=fx["fields"], w=fx["w"], h=fx["h"],
-                        dur=fx["dur"], zoom=z, progress_cb=None)
-                    if frames:
-                        layers.append({"frames_dir": fd, "start": fx["start"],
-                                       "end": fx["end"],
-                                       "w": int(round(fx["w"] * z)),
-                                       "h": int(round(fx["h"] * z))})
-                except Exception as e:
-                    report(92, f"動畫 {i} 算圖略過（{e}）")
-            if layers:
-                try:
-                    tmp = out["video"].replace(".mp4", "_stage.mp4")
-                    _stage.compose(out["video"], tmp, layers,
-                                   progress_cb=lambda p, m: report(93, m))
-                    os.replace(tmp, out["video"])
-                    report(95, f"疊上 {len(layers)} 個精緻動畫（舞台版型）")
-                except Exception as e:
-                    # 合成失敗不該讓整支短影音沒有產出——字幕字卡都燒好的片還在
-                    report(95, f"★ 舞台合成失敗，保留無動畫版本：{e}")
 
     out["cards"] = card_list
     out["visuals"] = visual_list
