@@ -137,11 +137,11 @@ def make(video: str, srt: Optional[str] = None,
     # fx（HTML 模板）不進 ASS——它是獨立的透明圖層，燒完字幕之後才疊上去
     fx_list = [v for v in visual_list if v.get("type") == "fx"]
     ass_visuals = [v for v in visual_list if v.get("type") != "fx"]
-    # fx 不進 ASS（它是 PNG 圖層），但它的時間區間要進去——
-    # 時間交疊的大字卡要讓位，不然會壓在動畫上
-    _vert.build_ass(subs, out["ass"], title=title, cta=cta, visuals=ass_visuals,
-                    stage_fx=fx_list, card_list=card_list, long_form=long_form)
-
+    # ⚠️ 順序：**先組好圖層再產字幕**。
+    # 字幕與字卡要知道哪幾秒會換成舞台版面，而「是不是舞台版位」寫在模板的
+    # meta 裡，是組圖層時才附上去的。反過來做的話 build_ass 拿到的是還沒有
+    # meta 的清單，舞台區間永遠算成空的——字卡會壓在動畫上、字幕會被小窗蓋住。
+    #
     # 動畫先算成 PNG 序列，跟字幕在同一次編碼裡插進去。
     # 分兩次做的話每次都是一輪有損轉檔，而且圖會蓋在字幕上。
     fx_dir = None
@@ -158,23 +158,58 @@ def make(video: str, srt: Optional[str] = None,
             try:
                 fd = os.path.join(fx_dir, f"L{i}")
                 os.makedirs(fd, exist_ok=True)
+                meta = tpl.get("meta") or {}
+                # 舞台版位的圖要撐滿舞台，模板寫的是設計尺寸
+                from .visual import inserts as _ins0
+                z = (_ins0.stage_zoom(_vert.W, _vert.H, fx["w"], fx["h"])
+                     if meta.get("placement") == "stage" else 1.0)
                 frames = _webfx.render_frames(
                     pathlib.Path(tpl["html"]).read_text(encoding="utf-8"),
                     fd, data=fx["fields"], w=fx["w"], h=fx["h"],
-                    dur=fx["dur"], progress_cb=None)
+                    dur=fx["dur"], zoom=z, progress_cb=None)
                 if frames:
                     insert_layers.append({
                         "frames_pattern": os.path.join(fd, "f_%04d.png"),
                         "start": fx["start"], "end": fx["end"],
-                        "w": fx["w"], "h": fx["h"], "meta": tpl.get("meta") or {}})
+                        "w": int(round(fx["w"] * z)),
+                        "h": int(round(fx["h"] * z)), "meta": meta})
             except Exception as e:
                 report(92, f"動畫 {i} 算圖略過（{e}）")
         if insert_layers:
             report(93, f"算好 {len(insert_layers)} 段動畫，準備插入畫面")
 
+    _vert.build_ass(subs, out["ass"], title=title, cta=cta, visuals=ass_visuals,
+                    stage_fx=insert_layers, card_list=card_list,
+                    long_form=long_form)
+
+    # 舞台版位要把人像縮進下方小窗——窗是寬扁的，隨便取一條會切掉額頭或下巴，
+    # 所以用臉部偵測抓實際的高度。偵測不到就用經驗值，不會失敗。
+    face_center = None
+    if insert_layers:
+        from .visual import inserts as _ins
+        if _ins.stage_spans(insert_layers):
+            if fx_dir:
+                _ins.stage_assets(_vert.W, _vert.H, fx_dir)
+            try:
+                faces = _speaker.detect_faces(src)
+                if faces:
+                    from .visual.reframe import probe_size
+                    sw, sh = probe_size(src)
+                    # ⚠️ 臉框的座標在「640 寬的取樣幀」空間裡（見 speaker.crop_box
+                    # 的 scale = src_w / 640），不是原片座標。直接除原片高度會
+                    # 算出偏高的位置，小窗就裁到牆壁而不是臉。
+                    sample_h = 640.0 * sh / sw if sw else sh
+                    ys = sorted(f["y"] + f["h"] / 2 for f in faces)
+                    face_center = ys[len(ys) // 2] / sample_h
+                    face_center = min(0.85, max(0.15, face_center))
+                    report(93, f"人臉在畫面 {face_center:.0%} 高度，小窗照這個裁")
+            except Exception:
+                pass
+
     try:
         _vert.render(src, out["ass"], out["video"], FONTS, logo=logo,
                      insert_layers=insert_layers or None,
+                     face_center=face_center, assets_dir=fx_dir,
                      progress_cb=progress_cb)
     finally:
         if fx_dir:

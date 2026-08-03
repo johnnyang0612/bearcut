@@ -58,13 +58,14 @@ def build_ass(subs: List[dict], ass_path: str,
     ev: List[str] = []
     cx = W // 2
 
-    # 動畫插進畫面的那幾秒，同時間的大字卡要讓位——兩個都在上半部，疊在一起
-    # 就是一團。字幕不用動：動畫壓在畫面上方，字幕在下方，本來就不打架。
-    stage_spans = [(float(v["start"]) - 0.2, float(v["end"]) + 0.2)
-                   for v in (stage_fx or [])]
+    # 舞台版位的那幾秒，人像縮到下方小窗——字幕要跟著移到小窗上方，
+    # 不然字會壓在人臉上。同時間的大字卡直接不畫，會跟動畫疊成一團。
+    from . import inserts as _ins
+    _spans = _ins.stage_spans(stage_fx or [])
+    _stage_sub_y = _ins.stage_subtitle_y(H)
 
     def _on_stage(s0, s1):
-        return any(s0 < e and s1 > b for b, e in stage_spans)
+        return any(s0 < e and s1 > b for b, e in _spans)
 
     # 字幕：每列最多 8 字（8×72px + 關鍵詞放大 118% 仍 < 700px 安全寬）
     for s in subs:
@@ -74,8 +75,10 @@ def build_ass(subs: List[dict], ass_path: str,
         rows = split_rows(text, max_len=TYPE["sub_max_len"])
         body = "\\N".join(_kw.decorate(r, keywords, long_form=long_form)
                           for r in rows[:2])
+        place = (f"\\an5\\pos({cx},{_stage_sub_y})"
+                 if _on_stage(s["start"], s["end"]) else "")
         ev.append(f"Dialogue: 0,{ts(s['start'])},{ts(s['end'])},Sub,,0,0,0,,"
-                  f"{{\\fad({TYPE['fade_ms']},{TYPE['fade_ms']})}}{body}")
+                  f"{{{place}\\fad({TYPE['fade_ms']},{TYPE['fade_ms']})}}{body}")
 
     # 開場標題：前 3.5 秒，讓中途滑進來的人知道這支在講什麼。
     #
@@ -83,11 +86,16 @@ def build_ass(subs: List[dict], ass_path: str,
     # （實測「一人公司怎麼做到的」＋「一人公司十個月」黏成一句，很混亂）。
     #
     # 動態示意圖同樣在頂帶，而且畫得比字卡更高更大——實測開頭的計數器
-    # 「1,000萬」直接壓在標題字上。所以兩種都要讓位，不是只讓字卡。
+    # 「1,000萬」直接壓在標題字上。所以三種都要讓位：
+    #   card_list  大字卡
+    #   visuals    ASS 圖表（沒有瀏覽器時的降級路線）
+    #   stage_fx   HTML 模板動畫  ← 漏掉這個就是實測看到的那個 bug。
+    #              `visuals` 參數是「非 fx」那一份，從裡面找 fx 永遠找不到。
     if title:
         t = clean_text(title)[:16]
         title_end = 3.5
-        for c in list(card_list or []) + list(visuals or []):
+        for c in (list(card_list or []) + list(visuals or [])
+                  + list(stage_fx or [])):
             if c["start"] < title_end:
                 title_end = min(title_end, c["start"] - 0.1)
         if title_end > 0.5:
@@ -119,7 +127,9 @@ def build_ass(subs: List[dict], ass_path: str,
 
 def _filter(ass_path: str, fonts_dir: str, logo: Optional[str] = None,
             already_portrait: bool = False,
-            insert_layers: Optional[List[dict]] = None) -> str:
+            insert_layers: Optional[List[dict]] = None,
+            face_center: Optional[float] = None,
+            assets_dir: Optional[str] = None) -> str:
     """直式版面的 filter。
 
     來源比例不同，處理方式也不同：
@@ -149,7 +159,8 @@ def _filter(ass_path: str, fonts_dir: str, logo: Optional[str] = None,
     if insert_layers:
         from . import inserts as _ins
         frag, _ = _ins.build(insert_layers, W, H, base_label="base",
-                             out_label="gfx")
+                             out_label="gfx", face_center=face_center,
+                             assets_dir=assets_dir)
         if frag:
             base = f"{base};{frag}"
             src = "gfx"
@@ -160,6 +171,8 @@ def _filter(ass_path: str, fonts_dir: str, logo: Optional[str] = None,
 def render(video: str, ass_path: str, out_path: str, fonts_dir: str,
            logo: Optional[str] = None, crf: int = 19,
            insert_layers: Optional[List[dict]] = None,
+           face_center: Optional[float] = None,
+           assets_dir: Optional[str] = None,
            progress_cb: Optional[Callable] = None) -> str:
     """把橫式影片轉成直式並燒上字幕字卡。
 
@@ -186,18 +199,30 @@ def render(video: str, ass_path: str, out_path: str, fonts_dir: str,
                                       encoding="utf-8")
     try:
         tmp.write(_filter(ass_path, fonts_dir, logo, already_portrait=portrait,
-                          insert_layers=insert_layers))
+                          insert_layers=insert_layers, face_center=face_center,
+                          assets_dir=assets_dir))
         tmp.close()
         extra: List[str] = []
         if insert_layers:
             from . import inserts as _ins
-            _, extra = _ins.build(insert_layers, W, H)
+            _, extra = _ins.build(insert_layers, W, H, face_center=face_center,
+                                  assets_dir=assets_dir)
             report(97, f"轉直式，燒字幕並插入 {len(insert_layers)} 段動畫…")
         else:
             report(97, "轉直式並燒錄字幕字卡…")
+        # 長度封頂。合成裡只要有一個不會自己結束的來源（靜態圖、color），
+        # 輸出就可能一路編下去——這個坑踩過兩次（709MB、1.77GB），
+        # 所以不管有沒有插入圖層，一律用來源長度封住。
+        cap: List[str] = []
+        try:
+            d = float(media.get_duration(video))
+            if d > 0:
+                cap = ["-t", f"{d:.3f}"]
+        except Exception:
+            pass
         r = media.ffmpeg(["-y", "-i", video, *extra,
                           *media.filter_script_args(tmp.name),
-                          "-map", "[outv]", "-map", "0:a?",
+                          *cap, "-map", "[outv]", "-map", "0:a?",
                           "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                           "-pix_fmt", "yuv420p",
                           "-c:a", "aac", "-b:a", "192k", out_path])

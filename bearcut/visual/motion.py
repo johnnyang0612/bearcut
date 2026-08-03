@@ -138,6 +138,27 @@ def _traceable(value: float, text: str, unit: str = "") -> bool:
     return False
 
 
+def _human_number(num: float, unit: str) -> Tuple[float, str]:
+    """把數字換成中文習慣的量級。6000000 → (600, "萬")。
+
+    單位裡已經有量級字（「萬元」）就不再換算，否則會變成 600 萬萬。
+    """
+    if any(c in unit for c in "萬億千百"):
+        return num, unit
+    if abs(num) >= 100000000:
+        return num / 100000000, "億" + unit
+    if abs(num) >= 10000:
+        return num / 10000, "萬" + unit
+    return num, unit
+
+
+def _pretty(num: float) -> str:
+    """千分位。大數字沒有千分位就是一串 0，觀眾在畫面上一秒讀不出來。"""
+    if abs(num - round(num)) < 0.01:
+        return f"{int(round(num)):,}"
+    return f"{num:,.1f}"
+
+
 def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
     """驗一條 fx（HTML 模板）視覺。
 
@@ -167,6 +188,8 @@ def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
         return None
 
     out_fields = {}
+    unit_fix: dict = {}
+    nums: dict = {}
     for key, decl in spec_fields.items():
         if key not in fields:
             continue
@@ -186,12 +209,22 @@ def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
                 num = max(float(lo), num)
             if hi is not None:
                 num = min(float(hi), num)
-            out_fields[key] = int(num) if abs(num - int(num)) < 0.01 else round(num, 1)
+            # 顯示格式在這裡定，不能指望判斷腦——它這輪填 1000 配「萬」，
+            # 下輪就填 10000000 配空字串，畫面上變成一長串 0 沒人看得懂。
+            # 追溯驗證已經在上面用原值做完了，這裡只動呈現。
+            if decl.get("unitField"):
+                num, unit = _human_number(num, unit)
+                # 不能當場寫進 out_fields——單位本身也是欄位，迴圈跑到它時
+                # 會用判斷腦的原值蓋回去。等整圈跑完再套。
+                unit_fix[decl["unitField"]] = unit
+            nums[key] = num              # 衍生欄位要算數，不能拿千分位字串去 float()
+            out_fields[key] = _pretty(num)
         else:
             out_fields[key] = str(val).strip()[: int(decl.get("max") or 40)]
 
     if not out_fields:
         return None
+    out_fields.update(unit_fix)
 
     # 衍生欄位（例如 ringDeg = ringPct * 3.6）由宣告檔算，判斷腦不用填
     for dk, expr in (meta.get("derived") or {}).items():
@@ -199,7 +232,7 @@ def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
             continue
         try:
             src, _, mul = str(expr).partition("*")
-            base = out_fields.get(src.strip())
+            base = nums.get(src.strip(), out_fields.get(src.strip()))
             if base is not None:
                 out_fields[dk] = round(float(base) * float(mul.strip() or 1), 2)
         except (TypeError, ValueError):
@@ -207,7 +240,13 @@ def _verify_fx(v: dict, segments: List[dict], tpls: dict) -> Optional[dict]:
 
     start = float(segments[i]["start"])
     dur = float(meta.get("dur") or 1.6)
-    end = min(float(segments[i]["end"]), start + HOLD_SEC + dur)
+    # 掛多久看動畫本身要畫多久，**不要被字幕段落的結尾夾住**。
+    # 清單要 2.1 秒才畫完，卻掛在一句 1.7 秒的字幕上，畫到一半就消失了。
+    # 圖比那句話活得久是正常的剪接——剪輯師切的 B-roll 也不會跟著句子斷。
+    end = start + dur + HOLD_SEC
+    last = float(segments[-1]["end"])
+    if end > last:                      # 但不要超出影片結尾
+        end = last
     if end - start < 0.8:
         end = start + 0.8
     return {"seg": i, "type": FX, "template": name,
@@ -354,6 +393,13 @@ def pick(segments: List[dict], llm: Provider,
         out.append(spec)
         if len(out) >= max_n:
             break
+
+    # 圖不再被字幕段落夾住之後，前一張可能還沒收、後一張就進來了。
+    # 兩張圖疊在同一個位置就是一團糊，所以前一張提早收，中間留 0.25 秒空檔。
+    out.sort(key=lambda v: v["start"])
+    for a, b in zip(out, out[1:]):
+        if a["end"] > b["start"] - 0.25:
+            a["end"] = max(a["start"] + 0.8, b["start"] - 0.25)
     if downgraded:
         say(55, f"略過 {downgraded} 個只能用陽春圖表呈現的（寧可不配，也不要降低質感）")
     say(56, f"配了 {len(out)} 個動態示意圖")
