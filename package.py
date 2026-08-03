@@ -24,6 +24,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bearcut import __version__                                    # noqa: E402
+
+
+def _check_version_sync() -> None:
+    """版本號寫在兩個地方，不同步就停下來。
+
+    實際發生過：pyproject.toml 停在 0.1.0、bearcut/__init__.py 已經 0.2.0，
+    沒有人發現。版本號對不上會讓 `bearcut upgrade` 判斷錯誤，
+    使用者以為自己是最新版。
+    """
+    import re
+    p = Path(__file__).parent / "pyproject.toml"
+    m = re.search(r'^version = "([\d.]+)"', p.read_text(encoding="utf-8"),
+                  re.M) if p.exists() else None
+    if m and m.group(1) != __version__:
+        raise SystemExit(
+            f"  版本號不同步：pyproject.toml 是 {m.group(1)}，"
+            f"bearcut/__init__.py 是 {__version__}。\n"
+            f"  兩邊改成一樣再打包。")
 from bearcut.env.platform import ROOT, console_utf8                # noqa: E402
 
 console_utf8()
@@ -88,11 +106,20 @@ def normalize(data: bytes, suffix: str, rel_posix: str = "") -> bytes:
 ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
 
+#: 解壓後要可以直接執行的檔案。ZIP 有保存 Unix 權限的欄位，但預設不會寫，
+#: 所以 macOS 使用者解壓出來的 .command 沒有 x 權限——**點兩下不會執行**，
+#: 只會用文字編輯器打開。客戶的原話：「.bat mac 打不開」。
+EXEC_EXT = {".command", ".sh"}
+
+
 def entry(name: str) -> zipfile.ZipInfo:
     """建一個時間戳與權限都固定的 ZIP 條目。"""
     zi = zipfile.ZipInfo(name, date_time=ZIP_EPOCH)
     zi.compress_type = zipfile.ZIP_DEFLATED
-    zi.external_attr = 0o644 << 16      # 一般檔案，跨平台一致
+    exec_ = Path(name).suffix.lower() in EXEC_EXT
+    zi.external_attr = (0o755 if exec_ else 0o644) << 16
+    # macOS 的 unzip 只在「建立系統」標成 Unix 時才理會權限位元
+    zi.create_system = 3
     return zi
 
 
@@ -156,6 +183,7 @@ def pack_rulepack() -> int:
 
 
 def main() -> int:
+    _check_version_sync()
     if "--rulepack" in sys.argv[1:]:
         return pack_rulepack()
 

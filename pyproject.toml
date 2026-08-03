@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bearcut"
-version = "0.1.0"
+version = "0.2.1"
 description = "自動順剪：把毛片剪成可用的成片，並自己檢查剪得對不對。Automatic rough-cut that removes retakes, stumbles and dead air — and verifies its own cuts."
 readme = "README.md"
 requires-python = ">=3.9"
