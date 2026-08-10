@@ -25,8 +25,10 @@ def detect_silences(input_path: str, noise_db: float = -30,
         "-i", input_path,
         "-af", f"silencedetect=noise={noise_db}dB:d={min_silence_sec}",
         "-f", "null", "-",
-    ])
-    # silencedetect 的結果印在 stderr，不是 stdout
+    ], loglevel="info")
+    # silencedetect 的結果印在 stderr，不是 stdout，而且是 **info 層**——
+    # media.ffmpeg 預設把 loglevel 壓到 error，這裡必須明確要回 info，
+    # 否則抓不到任何靜音，而且不會有任何錯誤訊息告訴你。
     stderr = out.stderr or ""
 
     silences: List[dict] = []

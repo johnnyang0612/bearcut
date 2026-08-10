@@ -12,7 +12,9 @@
    中文檔名。用 `text=True` 走 locale 解碼會 UnicodeDecodeError，連帶整個結果吃不到。
 """
 
+import os
 import subprocess
+import tempfile
 from typing import List, Optional
 
 from .env import ffmpeg as _ff
@@ -32,12 +34,68 @@ def _binary(name: str) -> str:
 
 
 def run(cmd: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:
-    """執行並強制 UTF-8 解碼（見模組說明第 2 點）。"""
+    """執行並強制 UTF-8 解碼（見模組說明第 2 點）。
+
+    只給輸出量必然很小的呼叫用（ffprobe、能力探測）。跑 ffmpeg 請走 `ffmpeg()`
+    ——那裡改走暫存檔，理由見 `run_to_files()`。
+    """
     return subprocess.run(
         cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
-def ffmpeg(args: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:
+# 讀回輸出時的上限。超過就只留頭尾——中間那段對診斷沒有價值，
+# 而「無條件全部讀進記憶體」正是這裡要避免的事。
+_CAP = 4 * 1024 * 1024
+
+
+def _read_capped(path: str) -> str:
+    try:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            if size <= _CAP:
+                data = f.read()
+            else:
+                head = f.read(_CAP // 2)
+                f.seek(size - _CAP // 2)
+                data = head + "\n…（輸出過長，中間省略）…\n".encode("utf-8") + f.read()
+    except OSError:
+        return ""
+    return data.decode("utf-8", "replace")
+
+
+def run_to_files(cmd: List[str],
+                 timeout: Optional[int] = None) -> subprocess.CompletedProcess:
+    """執行，但把 stdout/stderr 導到暫存檔而不是 pipe，讀回來時再自己設上限。
+
+    **為什麼不用 `capture_output`。** subprocess 的 reader thread 是用一次
+    `read()` 把整串輸出讀成單一字串，沒有任何上限。ffmpeg 若持續吐訊息（進度行、
+    逐格重複的 warning），長片編碼下這個字串會一直長到 MemoryError；而 reader
+    thread 死掉之後 `subprocess.run` 會**永遠**等它 join，外觀就是整支程式無聲卡死。
+
+    實戰來源：AutoCut 2026-08-09 切 88 分鐘直播，第 3 支起穩定卡死，最久卡了
+    48 分鐘才被發現。`-nostats` 擋掉主要來源（見 `ffmpeg()`），但那只是把量壓小，
+    沒有把「無上限」這件事修掉——會逐格重複的 warning 一樣能撐爆。導到檔案之後
+    輸出量再大也只是佔硬碟，記憶體由 `_CAP` 決定。
+    """
+    o = tempfile.NamedTemporaryFile(suffix=".ffout", delete=False)
+    e = tempfile.NamedTemporaryFile(suffix=".fferr", delete=False)
+    o.close()
+    e.close()
+    try:
+        with open(o.name, "wb") as fo, open(e.name, "wb") as fe:
+            p = subprocess.run(cmd, stdout=fo, stderr=fe, timeout=timeout)
+        return subprocess.CompletedProcess(
+            cmd, p.returncode, _read_capped(o.name), _read_capped(e.name))
+    finally:
+        for n in (o.name, e.name):
+            try:
+                os.unlink(n)
+            except OSError:
+                pass
+
+
+def ffmpeg(args: List[str], timeout: Optional[int] = None,
+           loglevel: str = "error") -> subprocess.CompletedProcess:
     """跑 ffmpeg。**一律帶 `-y`**。
 
     為什麼放在這裡而不是各自寫：沒帶 `-y` 時 ffmpeg 遇到已存在的輸出檔會等
@@ -47,8 +105,15 @@ def ffmpeg(args: List[str], timeout: Optional[int] = None) -> subprocess.Complet
 
     實際踩過：有些呼叫端記得帶、有些忘了，忘了的那幾支要等到有人重跑第二次
     才會發現。集中在這裡就不會再漏。
+
+    `loglevel` 預設 `error`：出錯要看得到，但不要一路吐 info。**只有需要讀
+    ffmpeg 正常輸出的呼叫端才改它**——目前只有 `detect/silence.py`，
+    silencedetect 的結果是印在 info 層的 stderr，壓成 error 會整層靜音偵測失效
+    （而且是安靜地失效：沒有錯誤訊息，只是一刀都沒抓到）。
     """
-    return run([_binary("ffmpeg"), "-hide_banner", "-nostats", "-y"] + args, timeout)
+    return run_to_files(
+        [_binary("ffmpeg"), "-hide_banner", "-v", loglevel, "-nostats", "-y"] + args,
+        timeout)
 
 
 def ffprobe(args: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:

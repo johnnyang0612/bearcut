@@ -22,8 +22,12 @@ jieba 沒裝時退回按標點與字數切，品質差一點但不會壞掉。
 import re
 from typing import List
 
-# 中文標點：在這些之後斷行最自然，優先於一般詞界
-_PUNCT = "。！？；，、：）」』》】…—"
+# 標點：在這些之後斷行最自然，優先於一般詞界。
+#
+# 半形的 !?;,:) 一起收——口播稿常是中英混打，輸入法沒切回全形就會吐半形。
+# 漏收的後果不是弄丟字（`_tokens` 不會丟），是標點自己落單在行首（「…剪片啦 / !!」）。
+# 不收 `.` 與 `-`：小數點（3.5 萬）和連字號會被當成斷點，弊大於利。
+_PUNCT = "。！？；，、：）」』》】…—" + "!?;,:)"
 
 # 不該出現在行首的虛詞。
 #
@@ -96,6 +100,21 @@ def _cut(jb, text: str) -> List[str]:
     return [w for w in out if w]
 
 
+def _glue_punct(toks: List[str]) -> List[str]:
+    """把以標點開頭的單位黏回前一個——標點自己一列很難看。
+
+    連續標點也要一起黏（「剪片啦!!」的第二個 `!`）：兩條產生路徑都會把 `!!`
+    切成兩個單位，不做這一關就會排成「剪片啦! / !」。
+    """
+    out: List[str] = []
+    for t in toks:
+        if out and t and t[0] in _PUNCT:
+            out[-1] += t
+        else:
+            out.append(t)
+    return out
+
+
 def _tokens(text: str) -> List[str]:
     """把文字切成「不可再分」的單位。"""
     jb = _get_jieba()
@@ -109,19 +128,10 @@ def _tokens(text: str) -> List[str]:
                 cur = ""
         if cur:
             out.extend(list(cur))
-        return out
+        return _glue_punct(out)
 
-    toks = []
-    for w in _cut(jb, text):
-        w = w.strip()
-        if not w:
-            continue
-        # 標點黏在前一個詞後面——標點自己一列很難看
-        if w[0] in _PUNCT and toks:
-            toks[-1] += w
-        else:
-            toks.append(w)
-    return toks
+    toks = [w.strip() for w in _cut(jb, text)]
+    return _glue_punct([w for w in toks if w])
 
 
 def split_rows(text: str, max_len: int = 16) -> List[str]:

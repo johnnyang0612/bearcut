@@ -37,11 +37,47 @@ from .rules import RULEPACK_DIR
 MAX_LEN_DRIFT = 0.30      # 單段長度差超過此比例就不採用（見上方防線 2）
 
 
+def _load_lexicon() -> Tuple[dict, list]:
+    """讀進階規則包的校字詞表 `lexicon/corrections.json`。沒有就回空的。
+
+    ## 為什麼是獨立一個檔，不是直接蓋掉 replacements.json
+
+    底包的 `replacements.json` 出廠是空的，並且明講「使用者可以自由增修」——
+    那是**使用者的檔**。進階包若把自己的表寫進同一個路徑，`update._merge_into`
+    會直接覆蓋，使用者手改的品牌詞就在裝進階包的當下無聲消失。
+
+    所以進階包放自己的 `lexicon/`，兩層在這裡合併。優先序（後者蓋前者）：
+    底包 → 進階包 → 使用者記憶。
+
+    格式跟底包不同：進階包的表依來源分組（typo / cn_to_tw…），每組各有
+    `$desc` 與 `map`，這樣客戶端 UI 才說得出「這條為什麼被改」。這裡只把所有
+    `map` 攤平成一張替換表；`$` 開頭的欄位一律是註解，不是資料。
+    """
+    repl: dict = {}
+    hot: list = []
+    p = RULEPACK_DIR / "lexicon" / "corrections.json"
+    if not p.exists():
+        return repl, hot
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return repl, hot                          # 詞表壞掉不該讓整條校字失敗
+    for group, body in (d.get("replacements") or {}).items():
+        if group.startswith("$") or not isinstance(body, dict):
+            continue
+        for k, v in (body.get("map") or {}).items():
+            if not k.startswith("$") and isinstance(v, str):
+                repl[k] = v
+    hot = [w for w in (d.get("hotwords") or []) if isinstance(w, str)]
+    return repl, hot
+
+
 def load_replacements() -> Tuple[dict, list]:
     """讀替換表與詞彙表。回 `(replacements, hotwords)`。
 
-    兩個來源合併：規則包（通用）＋ 使用者的校正記憶（`bearcut learn` 學來的）。
-    使用者的優先——他親手修過的東西，比通用規則更知道自己在講什麼。
+    三個來源合併，後者蓋前者：底包規則（通用）→ 進階包 `lexicon/`（見
+    `_load_lexicon`）→ 使用者的校正記憶（`bearcut learn` 學來的）。
+    使用者的最優先——他親手修過的東西，比通用規則更知道自己在講什麼。
     """
     repl, hot = {}, []
     p = RULEPACK_DIR / "replacements.json"
@@ -53,6 +89,9 @@ def load_replacements() -> Tuple[dict, list]:
             hot = list(d.get("hotwords") or [])
         except json.JSONDecodeError:
             pass
+    x_repl, x_hot = _load_lexicon()
+    repl.update(x_repl)
+    hot += [w for w in x_hot if w not in hot]
     try:
         from .learn import load as _load_memory
         u_repl, u_hot = _load_memory()
