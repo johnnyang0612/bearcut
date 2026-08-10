@@ -112,6 +112,29 @@ def _pack_hint(asset: dict, data: dict) -> Optional[str]:
     return f"bearcut-{suffix}" if suffix else "bearcut-base"
 
 
+def _pack_version(asset: dict, tag: str) -> str:
+    """這個資產是規則包的**哪一版**。
+
+    ★ 不能用 release 的 `tag_name`——那是**引擎**的版號，規則包有自己的版本線，
+    兩者不同步是常態（引擎修 bug 不代表規則改過）。
+
+    用 tag 的後果 2026-08-10 實測過：把內容未變的 `rulepack-0.2.0.zip` 掛上
+    `v0.2.2` 的 release，客戶端判成「有 0.2.2 可更新」→ 使用者裝了 →
+    裝進去的還是 0.2.0，`current()` 讀出來也還是 0.2.0 → 下次檢查再問一次。
+    **一個永遠關不掉的更新提示**，而且每次都真的重下載一次。
+
+    所以版號從檔名取：`rulepack-0.2.0.zip` → `0.2.0`、
+    `rulepack-pro-0.2.1.zip` → `0.2.1`。取不到才退回 tag——沒有版號可比
+    會讓 `newer` 永遠是 False，那比退回一個可能偏大的值更糟。
+    """
+    name = (asset.get("name") or "").strip()
+    if name.startswith("rulepack") and name.endswith(".zip"):
+        parts = [p for p in name[:-4].split("-") if p]
+        if parts and re.match(r"^\d", parts[-1]):
+            return parts[-1]
+    return (tag or "").lstrip("v")
+
+
 def current() -> dict:
     """目前安裝的規則包資訊。"""
     p = RULEPACK_DIR / "rulepack.json"
@@ -201,7 +224,7 @@ def check(feed: Optional[str] = None, token: Optional[str] = None) -> dict:
         return {"available": False, "current": cur.get("version"),
                 "latest": data.get("tag_name"), "error": "這個版本沒有附規則包"}
 
-    latest = (data.get("tag_name") or "").lstrip("v")
+    latest = _pack_version(asset, data.get("tag_name") or "")
     newer = _ver_tuple(latest) > _ver_tuple(cur.get("version") or "0")
 
     # 版號一樣不代表沒東西可拿：進階包與免費底包是**不同的包**，
