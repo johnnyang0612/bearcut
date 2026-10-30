@@ -44,23 +44,46 @@ from .rules import load as load_rules
 AFADE_SEC = 0.025
 
 
-def _build_filter(keep: List[dict], afade_sec: float = AFADE_SEC) -> str:
-    parts, labels = [], []
-    for i, k in enumerate(keep):
-        s, e = k["start"], k["end"]
-        dur = e - s
-        parts.append(f"[0:v]trim=start={s}:end={e},setpts=PTS-STARTPTS[v{i}];")
+FPS = 30
 
-        af = (f"[0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS,"
-              + _afade_args(dur, afade_sec))
+
+def frame_counts(keep: List[dict], fps: int = FPS) -> List[int]:
+    """每個保留段在輸出上佔幾格。
+
+    依「累積時長」四捨五入到格，不是每段各自取整——各段各自取整的誤差會一路累加，
+    段一多音畫就慢慢錯開；用累積值取整，任何一個接點的音畫誤差都 ≤ 半格。
+    極短的段至少給 1 格，多出來的會在下一段自動扣回。"""
+    out, t, prev = [], 0.0, 0
+    for k in keep:
+        t += k["end"] - k["start"]
+        n = max(int(round(t * fps)) - prev, 1)
+        out.append(n)
+        prev += n
+    return out
+
+
+def _build_filter(keep: List[dict], sample_rate: int = 48000,
+                  afade_sec: float = AFADE_SEC, fps: int = FPS) -> str:
+    """每段畫面先轉 CFR 再截成「剛好 n 格」，聲音補靜音後截成「剛好 n/fps 秒」的取樣數，
+    concat 前兩條就等長。
+
+    舊作法是 concat 之後才 `fps=30`：保留段一路到檔尾時，fps 收尾會多吐 ~1.5 秒畫面、
+    聲音沒有，接檔後就是一個全零無聲洞（AutoCut EP9 實戰 4 個）。
+
+    CFR 的理由：原片常是變動幀率（VFR，實際可能只有 ~22fps），不轉的話下游做
+    「慢慢拉近」這類運鏡時，每格間隔不平均會看起來卡頓。"""
+    parts, labels = [], []
+    for i, (k, n) in enumerate(zip(keep, frame_counts(keep, fps))):
+        s = k["start"]
+        # tpad 多墊兩格再截，避免來源在段尾少一格時整段短掉
+        parts.append(f"[0:v]trim=start={s},setpts=PTS-STARTPTS,fps={fps},"
+                     f"tpad=stop_mode=clone:stop=2,trim=end_frame={n}[v{i}];")
+        af = (f"[0:a]atrim=start={s},asetpts=PTS-STARTPTS,apad,"
+              f"atrim=end_sample={int(round(n * sample_rate / fps))},"
+              + _afade_args(n / fps, afade_sec))
         parts.append(af + f"[a{i}];")
         labels.append(f"[v{i}][a{i}]")
-
-    # concat 後把畫面轉成固定 30fps（CFR）。
-    # 原片常是變動幀率（VFR，實際可能只有 ~22fps），不轉的話下游做「慢慢拉近」這類
-    # 運鏡時，每格間隔不平均會看起來卡頓。轉 CFR 讓增量平均、動作滑順。
-    parts.append("".join(labels)
-                 + f"concat=n={len(keep)}:v=1:a=1[outvc][outa];[outvc]fps=30[outv]")
+    parts.append("".join(labels) + f"concat=n={len(keep)}:v=1:a=1[outv][outa]")
     return "\n".join(parts)
 
 
@@ -127,20 +150,23 @@ def _cut_by_segments(input_path: str, keep: List[dict], output_path: str,
 
     workdir = tempfile.mkdtemp(prefix="bearcut_seg_")
     segs: List[str] = []
+    sr = media.probe_streams(input_path).get("sr", 48000)
     try:
-        for i, k in enumerate(keep):
+        for i, (k, n) in enumerate(zip(keep, frame_counts(keep))):
             s, e = float(k["start"]), float(k["end"])
-            dur = round(e - s, 3)
-            if dur <= 0:
+            if e - s <= 0:
                 continue
+            dur = n / FPS
             seg = os.path.join(workdir, f"seg{i:03d}.mp4")
             what = f"切第 {len(segs) + 1}/{len(keep)} 段"
             report(96, f"{what}（{dur:.1f}s）…")
             _run_with_retry([
-                "-ss", f"{s:.3f}", "-i", input_path, "-t", f"{dur:.3f}",
+                "-ss", f"{s:.3f}", "-t", f"{dur + 1:.3f}", "-i", input_path,
                 # fps=30 與編碼參數都跟單次 filter_complex 那條路一致：
                 # 各段規格一致，concat 才能走串流複製（無損、最快）。
-                "-vf", "fps=30", "-af", _afade_args(dur),
+                # 畫面剛好 n 格、聲音剛好 n/30 秒：每段等長，接起來才不會一段段累積錯開。
+                "-vf", f"fps={FPS},tpad=stop_mode=clone:stop=2", "-frames:v", str(n),
+                "-af", f"apad,atrim=end_sample={int(round(n * sr / FPS))}," + _afade_args(dur),
                 "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
                 "-c:a", "aac", "-b:a", "192k",
                 seg,
@@ -179,18 +205,27 @@ def cut_video(input_path: str, keep: List[dict], output_path: str,
         shutil.copyfile(input_path, output_path)
         return output_path
 
+    # 保留段不能超過「畫面、聲音較短的那條」：超出的部分只會變成無聲畫面或黑畫面
+    st = media.probe_streams(input_path)
+    cap = min(st.get("v", 1e18), st.get("a", 1e18))
+    keep = [dict(k, end=min(k["end"], cap)) for k in keep
+            if min(k["end"], cap) - k["start"] > 0.5 / FPS]
+    if not keep:
+        raise RuntimeError("保留區間全落在影片結尾之後。")
+
     # 區間會往回跳（精華短片的冷開場 teaser）→ 單次 filter_complex 會爆記憶體，
     # 改切檔再接。判斷與理由見模組說明。
     if not _is_ascending(keep):
         report(96, f"保留區間有回頭（冷開場）→ 改切檔再接（{len(keep)} 段）…")
         _cut_by_segments(input_path, keep, output_path, crf, preset, report)
+        _require_av_equal(output_path)
         report(99, f"淨毛片已輸出：{os.path.basename(output_path)}")
         return output_path
 
     tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False,
                                       encoding="utf-8")
     try:
-        tmp.write(_build_filter(keep))
+        tmp.write(_build_filter(keep, sample_rate=st.get("sr", 48000)))
         tmp.close()
 
         args = [
@@ -210,5 +245,17 @@ def cut_video(input_path: str, keep: List[dict], output_path: str,
         except OSError:
             pass
 
+    _require_av_equal(output_path)
     report(99, f"淨毛片已輸出：{os.path.basename(output_path)}")
     return output_path
+
+
+def _require_av_equal(path: str) -> None:
+    """淨毛片畫面與聲音差 > 1 格就不交出（改名留著查），接檔後會變成無聲洞或音畫不同步。
+    不改名的話，批次重跑會當成「已剪好」跳過，壞檔一路流到成片。"""
+    ok, diff = media.check_av_length(path)
+    if not ok:
+        bad = path + ".音畫不等長.mp4"
+        os.replace(path, bad)
+        raise RuntimeError(f"淨毛片畫面與聲音長度差 {diff:+.3f}s（> 1 格），"
+                           f"已改名 {os.path.basename(bad)}，請回報。")

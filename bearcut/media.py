@@ -144,6 +144,40 @@ def filter_script_args(path: str) -> List[str]:
     return [_filter_opt, path]
 
 
+def probe_streams(path: str) -> dict:
+    """回 {'v': 畫面秒數, 'a': 聲音秒數, 'sr': 取樣率, 'ch': 聲道數}（查不到的鍵不放）。"""
+    import json
+    out = ffprobe(["-show_entries", "stream=codec_type,duration,sample_rate,channels",
+                   "-of", "json", path])
+    res = {}
+    try:
+        streams = json.loads(out.stdout or "{}").get("streams") or []
+    except ValueError:
+        streams = []
+    for s in streams:
+        try:
+            d = float(s.get("duration"))
+        except (TypeError, ValueError):
+            continue
+        if s.get("codec_type") == "video" and "v" not in res:
+            res["v"] = d
+        elif s.get("codec_type") == "audio" and "a" not in res:
+            res.update(a=d, sr=int(s.get("sample_rate") or 48000), ch=int(s.get("channels") or 0))
+    return res
+
+
+def check_av_length(path: str, fps: int = 30) -> tuple:
+    """畫面與聲音長度差。回 (ok, 差秒數)；差 > 1 格（+AAC 整包誤差）就不 ok。
+
+    為什麼要驗：畫面比聲音長的淨毛片，接檔後那一截就是「有畫面、全零無聲」的洞
+    （AutoCut EP9 實戰：4 個 1.4 秒無聲洞，發出去才被聽眾發現）。"""
+    st = probe_streams(path)
+    if "v" not in st or "a" not in st:
+        return True, 0.0
+    diff = st["v"] - st["a"]
+    return abs(diff) <= 1.0 / fps + 0.03, diff
+
+
 def get_duration(path: str) -> float:
     """影片總長度（秒）。"""
     out = ffprobe(["-show_entries", "format=duration",

@@ -145,6 +145,38 @@ def concat(parts: List[str], out_path: str,
         shutil.copyfile(parts[0], out_path)
         return out_path
 
+    for p in parts:   # 段內畫面比聲音長 → 接起來就是無聲洞
+        ok, diff = _media.check_av_length(p)
+        if not ok:
+            raise RuntimeError(f"{os.path.basename(p)} 畫面與聲音長度差 {diff:+.3f}s，不接檔（請重剪這段）。")
+
+    # 聲道／取樣率不一致時一律先轉單聲道 48k 再接。串流複製會把立體聲段跟單聲道段接成
+    # 同一條 AAC，解碼器中途換聲道數 → 右聲道每 0.19 秒重播一小段（AutoCut EP9 實戰：
+    # iPhone 第一段立體聲、後面四段單聲道，整集後半段卡卡頓頓）。
+    temps: List[str] = []
+    fmts = {(st.get("ch"), st.get("sr")) for st in (_media.probe_streams(p) for p in parts)}
+    if len(fmts) > 1:
+        say(88, f"各段聲道不一致 {sorted(fmts, key=str)} → 先統一單聲道 48kHz")
+        for i, p in enumerate(parts):
+            t = f"{out_path}.part{i}.mp4"
+            r = _media.ffmpeg(["-i", p, "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy",
+                               "-af", "aformat=sample_rates=48000:channel_layouts=mono",
+                               "-c:a", "aac", "-b:a", "192k", t])
+            if r.returncode != 0:
+                raise RuntimeError("統一聲道失敗：\n" + "\n".join((r.stderr or "").splitlines()[-10:]))
+            temps.append(t)
+        parts = temps
+    try:
+        return _concat(parts, out_path, say)
+    finally:
+        for t in temps:
+            try:
+                os.unlink(t)
+            except OSError:
+                pass
+
+
+def _concat(parts: List[str], out_path: str, say) -> str:
     whs = [_probe_wh(p) for p in parts]
     uniform = all(wh and wh == whs[0] for wh in whs)
 
